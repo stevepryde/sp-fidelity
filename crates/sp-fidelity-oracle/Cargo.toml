@@ -1,0 +1,18 @@
+[package]
+name = "sp-fidelity-oracle"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Development-only oracles for the sp-fidelity port: AMD's unchanged C++ host and DXC-compiled HLSL on Metal"
+publish = false
+repository.workspace = true
+
+[dependencies]
+sp-fidelity.workspace = true
+sp-fidelity-wgpu.workspace = true
+pollster.workspace = true
+serde_json.workspace = true
+wgpu = { workspace = true, features = ["std", "wgsl", "metal"] }
+
+[lints.rust]
+unsafe_code = "forbid"

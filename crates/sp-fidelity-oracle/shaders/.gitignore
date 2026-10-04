@@ -1,0 +1,13 @@
+# Only the FSR2 host test's variants are tracked; the others are generated
+# before a Metal oracle run (README.md#regeneration).
+/generated/fsr2/options-*/
+!/generated/fsr2/options-0x05/
+!/generated/fsr2/options-0x06/
+!/generated/fsr2/options-0x1b/
+!/generated/fsr2/options-0x1c/
+!/generated/fsr2/options-0x3b/
+!/generated/fsr2/options-0x3c/
+!/generated/fsr2/options-0x85/
+!/generated/fsr2/options-0x86/
+!/generated/fsr2/options-0xa5/
+!/generated/fsr2/options-0xa6/

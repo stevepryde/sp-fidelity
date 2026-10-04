@@ -1,0 +1,140 @@
+{
+  "metalEntryPoint": "main0",
+  "workgroupSize": [
+    8,
+    8,
+    1
+  ],
+  "resources": [
+    {
+      "name": "r_input_color_jittered",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 7,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_input_motion_vectors",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 6,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_input_exposure",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 9,
+      "arrayIndex": 0,
+      "mslIndex": 2,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_reactive_mask",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 3,
+      "arrayIndex": 0,
+      "mslIndex": 3,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_transparency_and_composition_mask",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 4,
+      "arrayIndex": 0,
+      "mslIndex": 4,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_reconstructed_previous_nearest_depth",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 5,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_dilated_motion_vectors",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 6,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_previous_dilated_motion_vectors",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 5,
+      "arrayIndex": 0,
+      "mslIndex": 7,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_dilatedDepth",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 2,
+      "arrayIndex": 0,
+      "mslIndex": 8,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "s_LinearClamp",
+      "kind": "sampler",
+      "registerClass": "s",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "sampler",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_prepared_input_color",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 9,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_dilated_reactive_masks",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 10,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "cbFSR2",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "buffer",
+      "byteSize": 128
+    }
+  ]
+}

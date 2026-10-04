@@ -1,0 +1,90 @@
+{
+  "metalEntryPoint": "main0",
+  "workgroupSize": [
+    256,
+    1,
+    1
+  ],
+  "resources": [
+    {
+      "name": "r_input_color_jittered",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "s_LinearClamp",
+      "kind": "sampler",
+      "registerClass": "s",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "sampler",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_img_mip_shading_change",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_img_mip_5",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 2,
+      "arrayIndex": 0,
+      "mslIndex": 2,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_auto_exposure",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 3,
+      "arrayIndex": 0,
+      "mslIndex": 3,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_spd_global_atomic",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 4,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "cbFSR2",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "buffer",
+      "byteSize": 128
+    },
+    {
+      "name": "cbSPD",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "buffer",
+      "byteSize": 24
+    }
+  ]
+}

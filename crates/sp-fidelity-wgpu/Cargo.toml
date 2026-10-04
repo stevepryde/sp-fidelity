@@ -1,0 +1,24 @@
+[package]
+name = "sp-fidelity-wgpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = true
+description = "wgpu implementation of the FidelityFX SDK backend interface (FfxInterface)"
+repository.workspace = true
+readme = "README.md"
+keywords = ["fsr2", "fidelityfx", "wgpu", "upscaling", "graphics"]
+categories = ["graphics", "rendering"]
+include = ["src/**", "LICENSE.txt", "README.md"]
+
+[dependencies]
+bytemuck.workspace = true
+sp-fidelity.workspace = true
+wgpu = { workspace = true, features = ["std", "wgsl", "dx12", "metal", "vulkan", "gles"] }
+wgpu-naga-bridge = "=29.0.4"
+
+[dev-dependencies]
+pollster.workspace = true
+
+[lints.rust]
+unsafe_code = "forbid"

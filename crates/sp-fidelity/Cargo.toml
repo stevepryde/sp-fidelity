@@ -1,0 +1,15 @@
+[package]
+name = "sp-fidelity"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Unofficial Rust and WGSL port of AMD FidelityFX FSR2 and its SDK support code"
+publish = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["fsr2", "fidelityfx", "wgpu", "upscaling", "graphics"]
+categories = ["graphics", "rendering"]
+include = ["src/**", "shaders/**", "vendor/**", "LICENSE.txt", "README.md", "CONFORMANCE.md"]
+
+[lints.rust]
+unsafe_code = "forbid"
