@@ -36,7 +36,10 @@ encoder (`std::mem::replace`) and submit the command buffers in order.
 `ffx_get_resource_wgpu` (the analogue of `ffxGetResourceDX12`) describes a
 texture with `ffx_get_resource_description_wgpu`; the handle stays valid until
 the next `ffx_take_command_list_wgpu`. Each pass views a texture as its binding
-declares. A copy destination needs `COPY_DST` and a copy source `COPY_SRC`.
+declares. A UAV of a mip the texture lacks views its last mip, as AMD's Vulkan
+backend binds it: FSR2's luminance pyramid binds mips 4 and 5 of a texture that
+has them only from a 64-pixel maximum render size. A copy destination needs
+`COPY_DST` and a copy source `COPY_SRC`.
 
 Each pipeline keeps the bind groups of the last two resource sets its jobs
 bound (FSR2 alternates two by frame) and its own uniform buffers, into which
