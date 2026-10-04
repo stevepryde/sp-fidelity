@@ -40,7 +40,7 @@ After the first release, replace the README's Git dependency example with:
 [dependencies]
 sp-fidelity = "0.1.0"
 sp-fidelity-wgpu = "0.1.0"
-wgpu = "=29.0.4"
+wgpu = "29.0.4"
 ```
 
 Applications import `sp_fidelity` and `sp_fidelity_wgpu`.

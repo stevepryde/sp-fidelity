@@ -32,7 +32,7 @@ Until the first crates.io release, use the Git dependencies:
 [dependencies]
 sp-fidelity = { git = "https://github.com/stevepryde/sp-fidelity" }
 sp-fidelity-wgpu = { git = "https://github.com/stevepryde/sp-fidelity" }
-wgpu = "=29.0.4"
+wgpu = "29.0.4"
 ```
 
 See the [core crate](crates/sp-fidelity/README.md) and

@@ -66,7 +66,8 @@ so `CLEAR_TEXTURE` is not needed.
 ## WASM and WebGPU
 
 The runtime crates compile for `wasm32-unknown-unknown` with wgpu's WebGPU
-backend enabled. Shader reflection uses Naga directly at wgpu's version.
+backend enabled. Shader reflection uses Naga directly from wgpu's compatible
+release line.
 
 FSR2 execution in browser WebGPU is not supported: `required_features()`
 includes native-only texture atomics, 16-bit normalized and adapter-specific
