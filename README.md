@@ -1,5 +1,10 @@
 # sp-fidelity
 
+[![sp-fidelity on crates.io](https://img.shields.io/crates/v/sp-fidelity.svg?label=sp-fidelity)](https://crates.io/crates/sp-fidelity)
+[![sp-fidelity docs](https://docs.rs/sp-fidelity/badge.svg)](https://docs.rs/sp-fidelity)
+[![sp-fidelity-wgpu on crates.io](https://img.shields.io/crates/v/sp-fidelity-wgpu.svg?label=sp-fidelity-wgpu)](https://crates.io/crates/sp-fidelity-wgpu)
+[![sp-fidelity-wgpu docs](https://docs.rs/sp-fidelity-wgpu/badge.svg)](https://docs.rs/sp-fidelity-wgpu)
+
 A standalone, unofficial 1:1 Rust and WGSL port of the FSR2 C++ and HLSL
 source in [AMD FidelityFX SDK 1.1.4](crates/sp-fidelity/vendor/sdk-1.1.4/source-revision.txt),
 produced entirely using AI coding agents, with a wgpu backend.
@@ -26,12 +31,12 @@ yet established.
 
 ## Use
 
-Until the first crates.io release, use the Git dependencies:
+Add the crates.io dependencies:
 
 ```toml
 [dependencies]
-sp-fidelity = { git = "https://github.com/stevepryde/sp-fidelity" }
-sp-fidelity-wgpu = { git = "https://github.com/stevepryde/sp-fidelity" }
+sp-fidelity = "0.1.0"
+sp-fidelity-wgpu = "0.1.0"
 wgpu = "29.0.4"
 ```
 
