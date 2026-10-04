@@ -135,7 +135,7 @@ impl Object {
     /// maximum render size (`ffx_fsr2.cpp:669-678, 998-1004`).
     fn uav_mip(&self, mip: u32) -> u32 {
         match self {
-            Self::Texture(texture) => mip.min(texture.mip_level_count() - 1),
+            Self::Texture(texture) => mip.min(texture.mip_level_count().saturating_sub(1)),
             Self::Buffer(_) => mip,
         }
     }
