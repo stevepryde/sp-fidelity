@@ -1,8 +1,8 @@
 //! GPU time of FSR2's passes, not conformance: AMD's DXC-compiled HLSL on
 //! Metal against the port's WGSL through wgpu, on the same device and inputs.
 //!
-//! The port runs SGL3D's configuration (HDR, inverted infinite depth,
-//! render-size motion vectors, sharpening, the device's FP16 table) for a few
+//! The port runs with HDR, inverted infinite depth,
+//! render-size motion vectors, sharpening and the device's FP16 table for a few
 //! frames of noise colour, a depth gradient and small motion at a 1920x1080
 //! display, capturing the last frame's pass inputs; AMD's C++ host produces
 //! the same frames' trace. Each timed pass then runs `REPETITIONS` times back
@@ -44,7 +44,7 @@ const TIMED: &[&str] = &[
     "fsr2_accumulate_sharpen",
     "fsr2_rcas",
 ];
-/// SGL3D's context flags (`sgl-3d/src/stages/antialiasing/fsr2.rs`).
+/// HDR with inverted infinite depth.
 const FLAGS: u32 = FFX_FSR2_ENABLE_HIGH_DYNAMIC_RANGE
     | FFX_FSR2_ENABLE_DEPTH_INVERTED
     | FFX_FSR2_ENABLE_DEPTH_INFINITE;
@@ -236,7 +236,7 @@ impl Application {
     }
 }
 
-/// Frame `index`'s jitter, SGL3D's (and `oracle/fsr2_host.cpp`'s) sequence.
+/// Frame `index`'s jitter, using the SDK's phase count and offset helpers.
 fn jitter(index: usize, render: [u32; 2]) -> [f32; 2] {
     let phases = ffx_fsr2_get_jitter_phase_count(render[0] as i32, DISPLAY[0] as i32);
     let (x, y) = ffx_fsr2_get_jitter_offset(index as i32, phases).unwrap();

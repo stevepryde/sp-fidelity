@@ -1,6 +1,8 @@
-//! Rust and WGSL port of the AMD FidelityFX SDK 1.1.4 (revision
+//! Standalone, unofficial 1:1 Rust and WGSL port of FSR2 from
+//! AMD FidelityFX SDK 1.1.4 (revision
 //! `c6efa6bf7f2027b3ec94f28578bb5965eabb9e55`, vendored at `vendor/sdk-1.1.4`):
-//! the host, and the GPU passes as hand-written WGSL.
+//! the C++ host and HLSL GPU passes, ported entirely using AI coding agents.
+//! Not affiliated with, endorsed by, or supported by AMD.
 //!
 //! A graphics API backend implements [`interface::FfxInterface`], as AMD's DX12
 //! and Vulkan backends implement `FfxInterface`; `sp-fidelity-wgpu` is the

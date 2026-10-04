@@ -89,7 +89,8 @@ impl Readback {
     }
 
     /// The copied bytes of each readback, without row padding, after the
-    /// encoders that recorded them have been submitted.
+    /// encoders that recorded them have been submitted. Native tooling only:
+    /// it waits for the device, which WebGPU cannot, and panics there.
     pub fn read_all(device: &wgpu::Device, readbacks: Vec<Self>) -> Vec<Vec<u8>> {
         for readback in &readbacks {
             readback

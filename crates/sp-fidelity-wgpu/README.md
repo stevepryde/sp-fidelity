@@ -2,7 +2,9 @@
 
 The wgpu backend of the [`sp-fidelity`](https://github.com/stevepryde/sp-fidelity/blob/main/crates/sp-fidelity/README.md) port: an
 implementation of the SDK's `FfxInterface`, as AMD's DX12 and Vulkan backends
-are. It knows nothing about any renderer or game.
+are. The port was produced entirely using AI coding agents as a 1:1 port
+of the original SDK source. This project is unofficial and not affiliated
+with, endorsed by, or supported by AMD.
 
 Resources and pipelines come from the SDK's descriptions and shader blobs:
 layouts from each blob's binding tables, binding types reflected from the
@@ -60,6 +62,17 @@ afterwards use the FP32 permutations.
 
 Clears are storage writes of the job's colour (`ClearUnorderedAccessViewFloat`),
 so `CLEAR_TEXTURE` is not needed.
+
+## WASM and WebGPU
+
+The runtime crates compile for `wasm32-unknown-unknown` with wgpu's WebGPU
+backend enabled. Shader reflection uses Naga directly at wgpu's version.
+
+FSR2 execution in browser WebGPU is not supported: `required_features()`
+includes native-only texture atomics, 16-bit normalized and adapter-specific
+formats. Applications choose their own fallback when those features are
+unavailable. `readback::Readback::read_all` blocks for GPU completion and is
+native-only; it panics on WebGPU. GPU tests and the oracle remain native-only.
 
 ## Platform workarounds
 

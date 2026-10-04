@@ -8,9 +8,8 @@ behind a recording `FfxInterface`, and the DXC-compiled unchanged pass HLSL on
 Metal replaying each pass from the inputs the port's WGSL received.
 
 FSR2 (SDK component 2.x as shipped in 1.1.4) is the ported effect. The host
-core, `ffx_core.wgsl` and `spd/ffx_spd.wgsl` were first verified through the
-SSSR and denoiser passes (removed in 009b728); they are re-verified here
-through FSR2. Results are from Apple M5, Metal, wgpu 29.0.4, DXC 1.9.0.5399
+core, `ffx_core.wgsl` and `spd/ffx_spd.wgsl` are verified here through FSR2.
+Results are from Apple M5, Metal, wgpu 29.0.4, DXC 1.9.0.5399
 (HLSL 2021, the SDK's bundled compiler default), SPIRV-Cross 1.4.357,
 2026-09-30.
 
@@ -85,8 +84,12 @@ effect.
 
 ## Differences and platform adaptations
 
-IDs are kept from the SSSR record; the removed ones applied only to SSSR and
-the denoiser.
+The runtime crates support WASM compilation with the WebGPU backend. FSR2
+execution still requires native-only GPU features; no browser GPU conformance
+is claimed. This build adaptation changes neither the SDK algorithms nor
+the shaders or conformance counts above.
+
+Adaptation IDs are stable and may have gaps.
 
 | ID | Boundary | Disposition |
 | --- | --- | --- |
@@ -145,7 +148,7 @@ saved nothing measurable and stays a loop.
 `ffxWgslOutside` (SDK-P7) combines its two tests with `|`: naga writes `||`
 as a branch, which cost up to 0.04 ms of a pass.
 
-GPU time, Apple M5, 1920×1080 display, SGL3D's permutations (`0x97`,
+GPU time, Apple M5, 1920×1080 display, permutations (`0x97`,
 sharpening `0xb7`, RCAS `0x17`), median of 5 rounds of 90 back-to-back
 repetitions from the same captured inputs (`sp-fidelity-oracle` example
 `fsr2_timing`; the SDK's compiled MSL runs in the Metal oracle with textures

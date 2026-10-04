@@ -36,7 +36,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::rc::Rc;
-use wgpu::naga;
 use wgpu::util::DeviceExt;
 
 mod dispatch_grid;
@@ -1934,7 +1933,7 @@ fn surface_format(format: wgpu::TextureFormat) -> FfxSurfaceFormat {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 

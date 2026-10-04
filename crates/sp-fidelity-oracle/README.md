@@ -2,9 +2,8 @@
 
 Development-only evidence for the [`sp-fidelity`](../sp-fidelity/README.md) port
 and [`sp-fidelity-wgpu`](../sp-fidelity-wgpu/README.md). Not
-published; nothing depends on it. It holds the FSR2 host test
-(`tests/fsr2_host_event_stream.rs`); the SSSR and denoiser cases were removed
-with their port (009b728).
+published; neither runtime crate depends on it. It holds the FSR2 host and
+GPU comparisons against the original SDK source.
 
 - `oracle/host.cpp` runs AMD's unchanged C++ host of an effect through a
   recording `FfxInterface` that prints one JSON event per backend call.
@@ -63,6 +62,29 @@ array index, constant buffers with slot, label), `memory-usage`, `execute`,
 `unregister`, the `destroy-*` events, `message` (type, text), `frame` and the
 driver's results. Bindings come from the DXC reflection of each compiled
 variant, as AMD's generated per-permutation tables do.
+
+## Development checks
+
+Use the pinned Rust toolchain. From the repository root:
+
+```sh
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+SP_FIDELITY_REQUIRE_GPU=1 cargo test --workspace
+cargo doc --no-deps --workspace
+```
+
+The host oracle needs `clang++` (or `CXX`). GPU tests need a compatible
+adapter; `SP_FIDELITY_REQUIRE_GPU=1` makes its absence a failure. Omit that
+variable to allow backend GPU tests to skip when no compatible adapter is
+available. See [RELEASING.md](../../RELEASING.md) for packaging and publication.
+
+Check WASM compilation of the runtime crates separately; the oracle remains
+native-only:
+
+```sh
+cargo check -p sp-fidelity -p sp-fidelity-wgpu --all-targets --target wasm32-unknown-unknown
+```
 
 ## Tests
 

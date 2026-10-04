@@ -10,7 +10,8 @@ the unchanged upstream notices in `vendor/`.
 Set the release version in `[workspace.package]` and update both internal
 version requirements in `[workspace.dependencies]`. Describe changes in the
 package documentation and record any SDK differences in `CONFORMANCE.md`.
-Run the development checks in the README separately from publishing.
+Run the [development checks](crates/sp-fidelity-oracle/README.md#development-checks)
+separately from publishing.
 
 From a clean commit, prepare and build both registry packages without uploading:
 
@@ -42,6 +43,4 @@ sp-fidelity-wgpu = "0.1.0"
 wgpu = "=29.0.4"
 ```
 
-Applications import `sp_fidelity` and `sp_fidelity_wgpu`. The package
-`fidelityfx` belongs to a different project; do not rename or alias these
-packages to it in the public examples.
+Applications import `sp_fidelity` and `sp_fidelity_wgpu`.
