@@ -35,8 +35,8 @@ Add the crates.io dependencies:
 
 ```toml
 [dependencies]
-sp-fidelity = "0.1.0"
-sp-fidelity-wgpu = "0.1.0"
+sp-fidelity = "0.1.1"
+sp-fidelity-wgpu = "0.1.1"
 wgpu = "29.0.4"
 ```
 

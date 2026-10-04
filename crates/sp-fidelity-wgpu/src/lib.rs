@@ -127,6 +127,18 @@ impl Object {
             Self::Buffer(buffer) => FfxWgpuObject::Buffer(buffer),
         }
     }
+
+    /// The mip a UAV binding of `mip` views: a mip the texture lacks is its
+    /// last, as AMD's Vulkan backend binds it (`executeGpuJobCompute`,
+    /// `sdk/src/backends/vk/ffx_vk.cpp:3769-3771`). FSR2's luminance pyramid
+    /// binds mips 4 and 5 of a texture that has them only from a 64-pixel
+    /// maximum render size (`ffx_fsr2.cpp:669-678, 998-1004`).
+    fn uav_mip(&self, mip: u32) -> u32 {
+        match self {
+            Self::Texture(texture) => mip.min(texture.mip_level_count().saturating_sub(1)),
+            Self::Buffer(_) => mip,
+        }
+    }
 }
 
 /// What an `FfxResource::resource` handle refers to.
@@ -577,7 +589,7 @@ impl FfxWgpuBackend {
             let as_buffer = matches!(entry.ty, wgpu::BindingType::Buffer { .. });
             let mip = match (&object, as_buffer) {
                 (Object::Buffer(_), true) => None,
-                (Object::Texture(_), false) => Some(uav.mip),
+                (Object::Texture(_), false) => Some(object.uav_mip(uav.mip)),
                 _ => return Err(FFX_ERROR_INVALID_ARGUMENT),
             };
             bind(wgsl, binding.array_index, object, mip, 0, None);
@@ -926,7 +938,7 @@ impl FfxWgpuBackend {
                     name: &r.handle.name,
                     description: r.handle.description,
                     object: r.handle.object.observed(),
-                    mip,
+                    mip: r.handle.object.uav_mip(mip),
                     writable,
                 });
             }
@@ -2484,6 +2496,104 @@ mod tests {
                     .all(|&code| (i32::from(code) - expected).abs() <= 1),
                 "job {job}: {texels:?}, expected {expected}"
             );
+        }
+    }
+
+    #[test]
+    fn fsr2_runs_below_a_64_pixel_maximum_render_size() {
+        // Defect: a UAV view of a mip the texture lacks. FSR2's luminance
+        // pyramid binds FSR2_ExposureMips (half the maximum render size, full
+        // chain) at mips 4 and 5 whatever its size (ffx_fsr2.cpp:669-678,
+        // 998-1004); below 64 pixels the texture lacks mip 5, and below 32
+        // mip 4 too. Expected: wgpu's validation accepts the context and a
+        // frame at each size.
+        use sp_fidelity::fsr2::*;
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        for size in [2, 31, 32, 63] {
+            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let (backend, interface) = ffx_get_interface_wgpu(&device);
+            let extent = FfxDimensions2D {
+                width: size,
+                height: size,
+            };
+            let mut context = FfxFsr2Context::default();
+            ffx_fsr2_context_create(
+                &mut context,
+                &FfxFsr2ContextDescription {
+                    flags: 0,
+                    max_render_size: extent,
+                    display_size: extent,
+                    fp_message: None,
+                    backend_interface: interface,
+                },
+            )
+            .unwrap();
+            let texture = |format, usage| {
+                device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width: size,
+                        height: size,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                })
+            };
+            let read = wgpu::TextureUsages::TEXTURE_BINDING;
+            let color = texture(wgpu::TextureFormat::Rgba16Float, read);
+            let depth = texture(wgpu::TextureFormat::R32Float, read);
+            let motion = texture(wgpu::TextureFormat::Rg16Float, read);
+            let output = texture(
+                wgpu::TextureFormat::Rgba16Float,
+                wgpu::TextureUsages::STORAGE_BINDING,
+            );
+            let mut description = FfxFsr2DispatchDescription {
+                motion_vector_scale: FfxFloatCoords2D {
+                    x: size as f32,
+                    y: size as f32,
+                },
+                render_size: extent,
+                frame_time_delta: 16.6,
+                pre_exposure: 1.,
+                reset: true,
+                camera_near: 0.1,
+                camera_far: 100.,
+                camera_fov_angle_vertical: 1.,
+                view_space_to_meters_factor: 1.,
+                ..Default::default()
+            };
+            {
+                let mut backend = backend.borrow_mut();
+                let state = FFX_RESOURCE_STATE_COMPUTE_READ;
+                description.command_list = backend
+                    .ffx_get_command_list_wgpu(device.create_command_encoder(&Default::default()));
+                description.color = backend.ffx_get_resource_wgpu(&color, "color", state);
+                description.depth = backend.ffx_get_resource_wgpu(&depth, "depth", state);
+                description.motion_vectors =
+                    backend.ffx_get_resource_wgpu(&motion, "motion", state);
+                description.output = backend.ffx_get_resource_wgpu(
+                    &output,
+                    "output",
+                    FFX_RESOURCE_STATE_UNORDERED_ACCESS,
+                );
+            }
+            ffx_fsr2_context_dispatch(&mut context, &description).unwrap();
+            let encoder = backend
+                .borrow_mut()
+                .ffx_take_command_list_wgpu(description.command_list)
+                .unwrap();
+            queue.submit([encoder.finish()]);
+            ffx_fsr2_context_destroy(&mut context).unwrap();
+            if let Some(error) = pollster::block_on(scope.pop()) {
+                panic!("{size}x{size}: {error}");
+            }
         }
     }
 }
