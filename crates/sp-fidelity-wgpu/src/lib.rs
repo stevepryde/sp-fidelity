@@ -25,8 +25,10 @@
 //! selects a wave64 permutation), `R32G32_FLOAT` UAVs allocated as
 //! `Rgba32Float` (Metal has no read-write `Rg32Float` storage texture) and a
 //! storage buffer backing a texture that a pipeline binds as a buffer (WGSL
-//! texture atomics return nothing; see `FfxWgpuBackend::back_buffer_bindings`).
-//! Nothing else differs from the SDK.
+//! texture atomics return nothing; see `FfxWgpuBackend::back_buffer_bindings`)
+//! and a job that fails before it records when wgpu rejects its views or bind
+//! group (SDK-P28: wgpu would invalidate the caller's whole encoder; see
+//! [`FfxWgpuBackend::take_job_error`]). Nothing else differs from the SDK.
 use sp_fidelity::blob_accessors::ffx_get_permutation_blob_by_index;
 use sp_fidelity::error::*;
 use sp_fidelity::interface::*;
@@ -232,6 +234,9 @@ pub struct FfxWgpuBackend {
     clears: HashMap<wgpu::TextureFormat, wgpu::ComputePipeline>,
     observer: Option<FfxWgpuJobObserver>,
     pass_timestamps: Option<FfxWgpuPassTimestamps>,
+    /// The error of the first job that stopped `execute_gpu_jobs` since
+    /// `take_job_error`, whose result the SDK's dispatch ignores.
+    job_error: Option<FfxErrorCode>,
 }
 
 /// Timestamp query pairs for the compute passes `execute_gpu_jobs` begins, in
@@ -245,6 +250,22 @@ pub struct FfxWgpuPassTimestamps {
     pub count: u32,
     /// Pairs written so far.
     pub used: std::cell::Cell<u32>,
+}
+
+/// Whether wgpu rejected an object created inside `scope`, which a job then
+/// must not record (SDK-P28): wgpu reports a rejected object at once but the
+/// error of recording it only at the encoder's `finish`, where it invalidates
+/// the caller's whole encoder. Native wgpu resolves the pop at once; WebGPU
+/// resolves it later, so there this sees nothing and the error stays
+/// deferred to `finish`.
+fn rejected(scope: wgpu::ErrorScopeGuard) -> bool {
+    let mut future = std::pin::pin!(scope.pop());
+    matches!(
+        future
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop())),
+        std::task::Poll::Ready(Some(_))
+    )
 }
 
 /// `ffxGetInterfaceDX12` for wgpu: a backend for `device`, and the same
@@ -277,6 +298,7 @@ impl FfxWgpuBackend {
             clears: HashMap::new(),
             observer: None,
             pass_timestamps: None,
+            job_error: None,
         }
     }
 
@@ -337,6 +359,18 @@ impl FfxWgpuBackend {
             state,
             name: name.to_owned(),
         }
+    }
+
+    /// The error of the first job that stopped `execute_gpu_jobs` since the
+    /// last call, if any. A failed job stops before its dispatch, clear or
+    /// copy, and the jobs after it are not executed, so the encoder stays
+    /// valid, holding the jobs before it; a job whose views or bind group wgpu
+    /// rejects fails with `FFX_ERROR_BACKEND_API_ERROR` (SDK-P28). The SDK's dispatch (for
+    /// example `ffxFsr2ContextDispatch`) ignores `fpExecuteGpuJobs`'s result,
+    /// so check this after taking the command list back: the effect's output
+    /// is undefined for the frame.
+    pub fn take_job_error(&mut self) -> Option<FfxErrorCode> {
+        self.job_error.take()
     }
 
     /// Observe every job that `execute_gpu_jobs` records, or stop with `None`.
@@ -462,6 +496,7 @@ impl FfxWgpuBackend {
         }
         let texture = self.texture(clear.target)?.clone();
         let pipeline = self.clear_pipeline(texture.format())?;
+        let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2),
             mip_level_count: Some(1),
@@ -489,6 +524,9 @@ impl FfxWgpuBackend {
                 },
             ],
         });
+        if rejected(scope) {
+            return Err(FFX_ERROR_BACKEND_API_ERROR);
+        }
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("FFX_GPU_JOB_CLEAR_FLOAT"),
             timestamp_writes: self.timestamp_writes(),
@@ -801,7 +839,11 @@ impl FfxWgpuBackend {
                 let kept = groups.remove(index);
                 groups.insert(0, kept);
             } else {
+                let scope = self.device.push_error_scope(wgpu::ErrorFilter::Validation);
                 let group = self.bind_group(pipeline, &state.name, &bindings)?;
+                if rejected(scope) {
+                    return Err(FFX_ERROR_BACKEND_API_ERROR);
+                }
                 groups.insert(0, (bindings, group));
                 groups.truncate(KEPT_GROUPS);
             }
@@ -1547,6 +1589,9 @@ impl FfxInterface for FfxWgpuBackend {
         }
         self.observer = observer;
         self.command_lists[slot] = Some(encoder);
+        if let Err(error) = result {
+            self.job_error.get_or_insert(error);
+        }
         result
     }
 }
@@ -2595,5 +2640,184 @@ mod tests {
                 panic!("{size}x{size}: {error}");
             }
         }
+    }
+
+    #[test]
+    fn a_clear_job_wgpu_rejects_fails_before_it_records() {
+        // Defect: a job whose view or bind group wgpu rejects is recorded
+        // anyway, which wgpu reports only when the caller finishes the
+        // encoder, invalidating the caller's whole encoder, while execution
+        // reports success (SDK-P28). Forced by clearing a destroyed texture
+        // after a valid clear. Expected, from wgpu's validation and the
+        // texels: execution fails with FFX_ERROR_BACKEND_API_ERROR,
+        // `take_job_error` reports it once, the encoder finishes and runs
+        // without a validation error, and the clear before the failure landed
+        // (0.25, 0.5, 0.75, 1 as IEEE binary16: 3400, 3800, 3a00, 3c00).
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let (backend, _) = ffx_get_interface_wgpu(&device);
+        let mut backend = backend.borrow_mut();
+        let context = backend
+            .create_backend_context(FfxEffect::Fsr2, None)
+            .unwrap();
+        let [kept, rejected] = ["kept", "rejected"].map(|name| {
+            backend
+                .create_resource(
+                    &FfxCreateResourceDescription {
+                        heap_type: FfxHeapType::Default,
+                        resource_description: FfxResourceDescription {
+                            r#type: FfxResourceType::Texture2D,
+                            format: FfxSurfaceFormat::R16G16B16A16Float,
+                            width: 13,
+                            height: 9,
+                            depth: 1,
+                            mip_count: 1,
+                            flags: FFX_RESOURCE_FLAGS_NONE,
+                            usage: FFX_RESOURCE_USAGE_UAV,
+                        },
+                        initial_state: FFX_RESOURCE_STATE_UNORDERED_ACCESS,
+                        name,
+                        id: 0,
+                        init_data: FfxResourceInitData::default(),
+                    },
+                    context,
+                )
+                .unwrap()
+        });
+        backend.texture(rejected).unwrap().destroy();
+        for target in [kept, rejected] {
+            backend
+                .schedule_gpu_job(&FfxGpuJobDescription {
+                    job_label: "Clear".into(),
+                    descriptor: FfxGpuJobDescriptor::ClearFloat(FfxClearFloatJobDescription {
+                        color: [0.25, 0.5, 0.75, 1.],
+                        target,
+                    }),
+                })
+                .unwrap();
+        }
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let command_list =
+            backend.ffx_get_command_list_wgpu(device.create_command_encoder(&Default::default()));
+        assert_eq!(
+            backend.execute_gpu_jobs(command_list, context),
+            Err(FFX_ERROR_BACKEND_API_ERROR)
+        );
+        assert_eq!(backend.take_job_error(), Some(FFX_ERROR_BACKEND_API_ERROR));
+        assert_eq!(backend.take_job_error(), None);
+        let mut encoder = backend.ffx_take_command_list_wgpu(command_list).unwrap();
+        let readback =
+            readback::Readback::texture(&device, &mut encoder, backend.texture(kept).unwrap(), 0);
+        queue.submit([encoder.finish()]);
+        let texels = readback::Readback::read_all(&device, vec![readback]).remove(0);
+        if let Some(error) = pollster::block_on(validation.pop()) {
+            panic!("{error}");
+        }
+        let cleared = [0x00, 0x34, 0x00, 0x38, 0x00, 0x3a, 0x00, 0x3c];
+        assert_eq!(texels.len(), 13 * 9 * 8);
+        assert!(texels.chunks_exact(8).all(|texel| texel == cleared));
+    }
+
+    #[test]
+    fn an_fsr2_dispatch_whose_output_wgpu_rejects_leaves_the_encoder_valid() {
+        // Defect: as for a clear job, for FSR2's compute jobs (SDK-P28): the
+        // pass that writes the application's output binds a view wgpu
+        // rejects, forced by destroying the output before the dispatch.
+        // `ffxFsr2ContextDispatch` ignores `fpExecuteGpuJobs`'s result
+        // (`ffx_fsr2.cpp:1321`), so `take_job_error` is how the application
+        // learns. Expected, from wgpu's validation: the job error is
+        // FFX_ERROR_BACKEND_API_ERROR and the encoder finishes and runs
+        // without a validation error.
+        use sp_fidelity::fsr2::*;
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let size = 64;
+        let extent = FfxDimensions2D {
+            width: size,
+            height: size,
+        };
+        let (backend, interface) = ffx_get_interface_wgpu(&device);
+        let mut context = FfxFsr2Context::default();
+        ffx_fsr2_context_create(
+            &mut context,
+            &FfxFsr2ContextDescription {
+                flags: 0,
+                max_render_size: extent,
+                display_size: extent,
+                fp_message: None,
+                backend_interface: interface,
+            },
+        )
+        .unwrap();
+        let texture = |format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: None,
+                size: wgpu::Extent3d {
+                    width: size,
+                    height: size,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let read = wgpu::TextureUsages::TEXTURE_BINDING;
+        let color = texture(wgpu::TextureFormat::Rgba16Float, read);
+        let depth = texture(wgpu::TextureFormat::R32Float, read);
+        let motion = texture(wgpu::TextureFormat::Rg16Float, read);
+        let output = texture(
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureUsages::STORAGE_BINDING,
+        );
+        output.destroy();
+        let mut description = FfxFsr2DispatchDescription {
+            motion_vector_scale: FfxFloatCoords2D {
+                x: size as f32,
+                y: size as f32,
+            },
+            render_size: extent,
+            frame_time_delta: 16.6,
+            pre_exposure: 1.,
+            reset: true,
+            camera_near: 0.1,
+            camera_far: 100.,
+            camera_fov_angle_vertical: 1.,
+            view_space_to_meters_factor: 1.,
+            ..Default::default()
+        };
+        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        {
+            let mut backend = backend.borrow_mut();
+            let state = FFX_RESOURCE_STATE_COMPUTE_READ;
+            description.command_list = backend
+                .ffx_get_command_list_wgpu(device.create_command_encoder(&Default::default()));
+            description.color = backend.ffx_get_resource_wgpu(&color, "color", state);
+            description.depth = backend.ffx_get_resource_wgpu(&depth, "depth", state);
+            description.motion_vectors = backend.ffx_get_resource_wgpu(&motion, "motion", state);
+            description.output = backend.ffx_get_resource_wgpu(
+                &output,
+                "output",
+                FFX_RESOURCE_STATE_UNORDERED_ACCESS,
+            );
+        }
+        ffx_fsr2_context_dispatch(&mut context, &description).unwrap();
+        let mut backend = backend.borrow_mut();
+        let encoder = backend
+            .ffx_take_command_list_wgpu(description.command_list)
+            .unwrap();
+        assert_eq!(backend.take_job_error(), Some(FFX_ERROR_BACKEND_API_ERROR));
+        drop(backend);
+        queue.submit([encoder.finish()]);
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        if let Some(error) = pollster::block_on(validation.pop()) {
+            panic!("{error}");
+        }
+        ffx_fsr2_context_destroy(&mut context).unwrap();
     }
 }

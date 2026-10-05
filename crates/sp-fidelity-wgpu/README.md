@@ -24,6 +24,10 @@ let command_list = backend.borrow_mut().ffx_get_command_list_wgpu(encoder);
 let color = backend.borrow_mut().ffx_get_resource_wgpu(&texture, "Color", FFX_RESOURCE_STATE_COMPUTE_READ);
 // … dispatch with command_list and the resources, then:
 let encoder = backend.borrow_mut().ffx_take_command_list_wgpu(command_list).unwrap();
+if let Some(code) = backend.borrow_mut().take_job_error() {
+    // A job failed before recording: the effect's output is undefined this
+    // frame, and the encoder holds the jobs before it.
+}
 queue.submit([encoder.finish()]);
 ```
 
@@ -32,6 +36,12 @@ of `ffxGetCommandListDX12`) moves the caller's encoder into the backend and
 returns its handle; `ffx_take_command_list_wgpu` hands it back with the jobs
 recorded. A caller that records into a shared frame encoder can swap in a new
 encoder (`std::mem::replace`) and submit the command buffers in order.
+
+A job that fails stops before it records its dispatch, clear or copy, and the
+jobs after it are not executed, so the encoder stays valid. The SDK's dispatch
+ignores the backend's result, so `take_job_error` reports the first failure
+since it was last called. A job whose views or bind group wgpu rejects (for
+example a destroyed texture) fails with `FFX_ERROR_BACKEND_API_ERROR` (SDK-P28).
 
 `ffx_get_resource_wgpu` (the analogue of `ffxGetResourceDX12`) describes a
 texture with `ffx_get_resource_description_wgpu`; the handle stays valid until
@@ -96,6 +106,11 @@ Only here, never in the port:
   From the first job whose pipeline binds a texture the effect created as a
   buffer, a buffer holding the texture's contents (initial data, clears)
   replaces it; a zero clear of it clears the buffer.
+- SDK-P28: wgpu reports a view or bind group it rejects when it is created,
+  but recording it invalidates the caller's whole encoder at `finish`. A
+  clear or compute job creates them inside a validation error scope and
+  fails before recording if wgpu rejects one. On WebGPU the scope resolves
+  only after the call, so there the error stays deferred to `finish`.
 - Observers see each resource's SDK description beside the object, so a
   capture can write the SDK's layout.
 
