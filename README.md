@@ -37,7 +37,7 @@ Add the crates.io dependencies:
 [dependencies]
 sp-fidelity = "0.2.0"
 sp-fidelity-wgpu = "0.2.0"
-wgpu = "30.0"
+wgpu = "30.0.1"
 ```
 
 See the [core crate](crates/sp-fidelity/README.md) and

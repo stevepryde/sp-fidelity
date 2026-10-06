@@ -908,7 +908,7 @@ pub fn strict_variants(
         },
         zero_initialize_workgroup_memory: true,
         force_loop_bounding: true,
-        // Task shaders only.
+        // wgpu-hal passes Some; naga reads it only for task shaders.
         task_dispatch_limits: None,
         mesh_shader_primitive_indices_clamp: true,
         emit_int_div_checks: true,
@@ -927,8 +927,8 @@ pub fn strict_variants(
             allow_and_force_point_size: false,
             vertex_pulling_transform: true,
             vertex_buffer_mappings: Vec::new(),
-            // The port's binding arrays are sized, which the writer takes
-            // from the shader.
+            // wgpu-hal fills this only for storage-buffer binding arrays; the
+            // port has none.
             binding_array_length_map: Default::default(),
         },
     )

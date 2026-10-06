@@ -25,7 +25,7 @@ standalone generate-reactive host call remains a no-op; its GPU pass is ported.
 ## Conformance
 
 Recorded against the original: **9 host test cases, 16,866 matching host
-events, and 64,017 bit-exact GPU output comparisons**.
+events, and 64,005 bit-exact GPU output comparisons**.
 [CONFORMANCE.md](https://github.com/stevepryde/sp-fidelity/blob/main/crates/sp-fidelity/CONFORMANCE.md)
 records the full results, adaptations and known differences. GPU results
 are from Apple Metal; DX12/Vulkan conformance is not yet established.
