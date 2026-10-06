@@ -16,7 +16,7 @@ bytemuck.workspace = true
 sp-fidelity.workspace = true
 wgpu = { workspace = true, features = ["std", "wgsl", "dx12", "metal", "vulkan", "gles", "webgpu"] }
 naga = { workspace = true, features = ["wgsl-in"] }
-wgpu-naga-bridge = "29.0.4"
+wgpu-naga-bridge = "30.0"
 
 [dev-dependencies]
 pollster.workspace = true

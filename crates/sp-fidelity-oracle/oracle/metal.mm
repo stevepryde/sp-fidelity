@@ -226,7 +226,7 @@ class Oracle {
             desc.storageMode = privateTextures ? MTLStorageModePrivate : MTLStorageModeShared;
             desc.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView;
             if (usage & 2) desc.usage |= MTLTextureUsageShaderWrite;
-            // --time: the usage wgpu-hal 29.0.4 gives sp-fidelity-wgpu's
+            // --time: the usage wgpu-hal 30 gives sp-fidelity-wgpu's
             // allocation (metal/conv.rs map_texture_usage), without which
             // Metal's lossless compression and texture atomics differ.
             if (timeRepeats) {
@@ -301,9 +301,10 @@ class Oracle {
             options.languageVersion = MTLLanguageVersion2_3;
             options.fastMathEnabled = NO;
         } else if (compilerMode == "wgpu") {
-            // Match wgpu-hal 29.0.4 metal/adapter.rs and metal/device.rs.
+            // Match wgpu-hal 30 metal/adapter.rs and metal/device.rs.
             // Crucially, wgpu leaves fast math at MTLCompileOptions' default.
-            if (@available(macOS 15.0, *)) options.languageVersion = MTLLanguageVersion3_2;
+            if (@available(macOS 26.0, *)) options.languageVersion = MTLLanguageVersion4_0;
+            else if (@available(macOS 15.0, *)) options.languageVersion = MTLLanguageVersion3_2;
             else if (@available(macOS 14.0, *)) options.languageVersion = MTLLanguageVersion3_1;
             else if (@available(macOS 13.0, *)) options.languageVersion = MTLLanguageVersion3_0;
             else if (@available(macOS 12.0, *)) options.languageVersion = MTLLanguageVersion2_4;

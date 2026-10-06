@@ -532,7 +532,7 @@ var<private> ffx_wgsl_subgroup_invocation_id: FfxUInt32;
 
 fn ffxWaveIsFirstLane() -> FfxBoolean
 {
-    // WaveIsFirstLane(). WGSL: naga 29 has no subgroupElect(); the first active
+    // WaveIsFirstLane(). WGSL: naga 30 has no subgroupElect(); the first active
     // lane is the lane whose index the first active lane broadcasts.
     return ffx_wgsl_subgroup_invocation_id == subgroupBroadcastFirst(ffx_wgsl_subgroup_invocation_id);
 }

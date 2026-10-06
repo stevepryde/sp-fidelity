@@ -884,10 +884,12 @@ pub fn strict_variants(
     )
     .validate(&module)
     .unwrap();
-    // wgpu-hal 29.0.4 metal/device.rs with default runtime checks.
+    // wgpu-hal 30 metal/device.rs with default runtime checks
+    // (`ShaderRuntimeChecks::checked`), at the language version its
+    // metal/adapter.rs selects on macOS 26 and later.
     let restrict = wgpu::naga::proc::BoundsCheckPolicy::Restrict;
     let options = msl::Options {
-        lang_version: (3, 2),
+        lang_version: (4, 0),
         per_entry_point_map: msl::EntryPointResourceMap::from([(
             FFX_WGSL_ENTRY_POINT.to_owned(),
             msl::EntryPointResources {
@@ -906,6 +908,11 @@ pub fn strict_variants(
         },
         zero_initialize_workgroup_memory: true,
         force_loop_bounding: true,
+        // Task shaders only.
+        task_dispatch_limits: None,
+        mesh_shader_primitive_indices_clamp: true,
+        emit_int_div_checks: true,
+        ray_query_initialization_tracking: true,
     };
     let entry_point = (
         wgpu::naga::ShaderStage::Compute,
@@ -920,6 +927,9 @@ pub fn strict_variants(
             allow_and_force_point_size: false,
             vertex_pulling_transform: true,
             vertex_buffer_mappings: Vec::new(),
+            // The port's binding arrays are sized, which the writer takes
+            // from the shader.
+            binding_array_length_map: Default::default(),
         },
     )
     .unwrap();

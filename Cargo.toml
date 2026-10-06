@@ -4,20 +4,20 @@ members = ["crates/sp-fidelity", "crates/sp-fidelity-wgpu", "crates/sp-fidelity-
 default-members = ["crates/sp-fidelity", "crates/sp-fidelity-wgpu"]
 
 [workspace.package]
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/stevepryde/sp-fidelity"
 
 [workspace.dependencies]
-sp-fidelity = { version = "0.1.2", path = "crates/sp-fidelity" }
-sp-fidelity-wgpu = { version = "0.1.2", path = "crates/sp-fidelity-wgpu" }
+sp-fidelity = { version = "0.2.0", path = "crates/sp-fidelity" }
+sp-fidelity-wgpu = { version = "0.2.0", path = "crates/sp-fidelity-wgpu" }
 bytemuck = { version = "=1.25.2", features = ["derive"] }
 pollster = "=0.4.0"
 serde_json = "1.0"
-wgpu = { version = "29.0.4", default-features = false }
+wgpu = { version = "30.0", default-features = false }
 # Use wgpu's compatible Naga release line; its re-export is unavailable on WebGPU.
-naga = "29.0.4"
+naga = "30.0"
 
 [profile.dev]
 overflow-checks = true
