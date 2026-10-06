@@ -34,13 +34,6 @@ cargo publish -p sp-fidelity -p sp-fidelity-wgpu
 ```
 
 Cargo publishes them in dependency order. Do not include the oracle.
-After the first release, replace the README's Git dependency example with:
-
-```toml
-[dependencies]
-sp-fidelity = "0.1.0"
-sp-fidelity-wgpu = "0.1.0"
-wgpu = "29.0.4"
-```
+Keep the README's dependency example at the release's versions.
 
 Applications import `sp_fidelity` and `sp_fidelity_wgpu`.

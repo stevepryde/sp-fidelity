@@ -1576,7 +1576,8 @@ const fn bound(
 }
 
 /// The maxima measured over every case of these tests (Apple M5, macOS 27,
-/// wgpu 29.0.4, 2026-09-30), not tolerances chosen to pass.
+/// wgpu 29.0.4, 2026-09-30; wgpu 30.0.1 stays within them, 2026-10-06), not
+/// tolerances chosen to pass.
 const MEASURED: &[Bound] = &[
     // YCoCg: one binary16 ulp of the texel's luma, whose chroma cancels.
     bound(
@@ -2651,8 +2652,10 @@ fn luminance_pyramid_case(gpu: &gpu::Gpu, options: u32, sizes: &[Size]) -> compa
                 let color_contents = colour(w, h, seed, edge);
                 // Each frame runs twice. The first job's mip 5 holds other values
                 // before it (noise), so SPD's epilogue may read them (SDK-P14);
-                // the repeat reads back the mip 5 it writes again, whatever the
-                // visibility, so its exposure is compared like any output.
+                // in the repeat both sides' mip 5 hold this frame's values, so
+                // its exposure is compared like any output, within FSR2-F1/F2.
+                // The hand-off still races there: a repeat's exposure can move
+                // by F1's magnitude between runs (CONFORMANCE.md SDK-P14).
                 let mut random = Random(seed | 1);
                 let mut texels = Vec::new();
                 for mip in 0..mip_count {

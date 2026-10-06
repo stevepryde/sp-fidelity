@@ -104,7 +104,11 @@ impl Readback {
         readbacks
             .into_iter()
             .map(|readback| {
-                let mapped = readback.buffer.slice(..).get_mapped_range();
+                let mapped = readback
+                    .buffer
+                    .slice(..)
+                    .get_mapped_range()
+                    .expect("mapped readback");
                 let mut bytes = Vec::with_capacity(readback.bytes_per_row * readback.rows);
                 for row in 0..readback.rows {
                     let start = row * readback.padded_bytes_per_row;

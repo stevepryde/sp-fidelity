@@ -9,9 +9,9 @@ Metal replaying each pass from the inputs the port's WGSL received.
 
 FSR2 (SDK component 2.x as shipped in 1.1.4) is the ported effect. The host
 core, `ffx_core.wgsl` and `spd/ffx_spd.wgsl` are verified here through FSR2.
-Results are from Apple M5, Metal, wgpu 29.0.4, DXC 1.9.0.5399
+Results are from Apple M5, Metal, wgpu 30.0.1 (MSL 4.0), DXC 1.9.0.5399
 (HLSL 2021, the SDK's bundled compiler default), SPIRV-Cross 1.4.357,
-2026-09-30.
+2026-10-06.
 
 ## FSR2 host
 
@@ -54,7 +54,7 @@ Counts are output dumps.
 | Generate reactive | every permutation | bit-exact, 12,320 dumps |
 | Depth clip | every permutation | 3,718 exact; 386 within FSR2-F1 (`PreparedInputColor`, at most 16 on at most 0.47% of a dump's texels) and 516 within FSR2-F2 (`DilatedReactiveMasks`, up to 1.0 on at most 11.7%, in black neighbourhoods) |
 | TCR autogenerate | every permutation | 8,530 exact; 196 within FSR2-F1 (`AutoReactive`, at most 0.2) and 514 within FSR2-F2 (up to 1.0) |
-| Compute luminance pyramid | every permutation | 12,734 exact; 513 within FSR2-F1/F2 (`AutoExposure`, at most 1.5e-8); 337 SDK-P14 (`AutoExposure`, up to 0.53, only when the epilogue runs and mip 5 was written) |
+| Compute luminance pyramid | every permutation | 12,722 exact; 519 within FSR2-F1/F2 (`AutoExposure`, at most 1.5e-8; 7 of them in repeated jobs where SPD's epilogue runs, see SDK-P14); 343 SDK-P14 (`AutoExposure`, up to 0.53, only when the epilogue runs and mip 5 was written) |
 
 FSR2-F1 and FSR2-F2 admit a difference only up to the maxima measured over
 every case (`MEASURED` in the test), per pass, output, table and frame class;
@@ -120,7 +120,13 @@ the WGSL is original behaviour.
 
 In FSR2 the difference appears only in `FSR2_AutoExposure`, when the
 luminance pyramid runs SPD's epilogue (more than six mips) and mip 5 was
-written by another workgroup: up to 0.53 in 337 dumps.
+written by another workgroup: up to 0.53 in 343 dumps. The hand-off is a
+race, so the count can differ between runs (337 on wgpu 29.0.4). The same
+hand-off reaches the repeated jobs where the epilogue runs: 7 of the 519
+FSR2-F1/F2 dumps (at most 7.5e-9) are there, 1 on wgpu 29.0.4. Permutations
+that differ only in the sharpening bit compile identical pyramid shaders and
+take identical inputs, yet each of those 7 has an exact twin, so they too
+vary between runs rather than with float evaluation.
 
 ### SDK-P26 — loops and branches in naga's Metal output
 
@@ -150,8 +156,9 @@ saved nothing measurable and stays a loop.
 `ffxWgslOutside` (SDK-P7) combines its two tests with `|`: naga writes `||`
 as a branch, which cost up to 0.04 ms of a pass.
 
-GPU time, Apple M5, 1920×1080 display, permutations (`0x97`,
-sharpening `0xb7`, RCAS `0x17`), median of 5 rounds of 90 back-to-back
+GPU time, Apple M5, wgpu 29.0.4 (MSL 3.2), 2026-09-30 (not re-run on wgpu
+30), 1920×1080 display, permutations (`0x97`, sharpening `0xb7`, RCAS
+`0x17`), median of 5 rounds of 90 back-to-back
 repetitions from the same captured inputs (`sp-fidelity-oracle` example
 `fsr2_timing`; the SDK's compiled MSL runs in the Metal oracle with textures
 allocated as wgpu allocates them), ms:
