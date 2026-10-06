@@ -24,7 +24,7 @@ Not affiliated with, endorsed by, or supported by AMD.
 | FSR2 execution in browser WebGPU, forced wave64 | Not supported |
 
 Recorded conformance against the original: **9 host test cases, 16,866
-matching host events, and 64,017 bit-exact GPU output comparisons**.
+matching host events, and 64,005 bit-exact GPU output comparisons**.
 See [CONFORMANCE.md](crates/sp-fidelity/CONFORMANCE.md) for the full results,
 known differences and platform limitations. DX12/Vulkan conformance is not
 yet established.

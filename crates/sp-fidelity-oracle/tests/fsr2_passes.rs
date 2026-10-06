@@ -1576,7 +1576,8 @@ const fn bound(
 }
 
 /// The maxima measured over every case of these tests (Apple M5, macOS 27,
-/// wgpu 29.0.4, 2026-09-30), not tolerances chosen to pass.
+/// wgpu 29.0.4, 2026-09-30; wgpu 30.0.1 stays within them, 2026-10-06), not
+/// tolerances chosen to pass.
 const MEASURED: &[Bound] = &[
     // YCoCg: one binary16 ulp of the texel's luma, whose chroma cancels.
     bound(
