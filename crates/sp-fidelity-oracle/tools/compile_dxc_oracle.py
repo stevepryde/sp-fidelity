@@ -14,6 +14,8 @@ import re
 import shutil
 import subprocess
 
+from framegen_effects import EFFECTS as FRAMEGEN_EFFECTS
+
 CRATE = Path(__file__).resolve().parents[1]
 SDK = CRATE.parent / 'sp-fidelity/vendor/sdk-1.1.4/sdk'
 REVISION = 'c6efa6bf7f2027b3ec94f28578bb5965eabb9e55'
@@ -73,7 +75,59 @@ EFFECTS = {
                  'rw_output_autocomposition': 'r8',
                  'rw_output_prev_color_pre_alpha': 'r11f_g11f_b10f',
                  'rw_output_prev_color_post_alpha': 'r11f_g11f_b10f'}),
+    'fsr3upscaler': dict(
+        # FfxFsr3UpscalerPass order, including the unsupported deprecated slot.
+        passes=[('fsr3upscaler_prepare_inputs', 'prepare_inputs'),
+                ('fsr3upscaler_luma_pyramid', 'luma_pyramid'),
+                ('fsr3upscaler_shading_change_pyramid', 'shading_change_pyramid'),
+                ('fsr3upscaler_shading_change', 'shading_change'),
+                ('fsr3upscaler_prepare_reactivity', 'prepare_reactivity'),
+                ('fsr3upscaler_luma_instability', 'luma_instability'),
+                ('fsr3upscaler_accumulate', 'accumulate'),
+                ('fsr3upscaler_accumulate_sharpen', 'accumulate'),
+                ('fsr3upscaler_rcas', 'rcas'),
+                ('fsr3upscaler_debug_view', 'debug_view'),
+                ('fsr3upscaler_generate_reactive', 'autogen_reactive'),
+                ('fsr3upscaler_tcr_autogenerate', None)],
+        callbacks='fsr3upscaler/ffx_fsr3upscaler_callbacks_hlsl.h',
+        msl='30100',
+        includes=['.', 'fsr3upscaler'],
+        # CMakeCompileFSR3UpscalerShaders.txt / CMakeShadersFSR3Upscaler.txt.
+        args=['-Wno-for-redefinition', '-Wno-ambig-lit-shift',
+              '-DFFX_FSR3UPSCALER_OPTION_UPSAMPLE_SAMPLERS_USE_DATA_HALF=0',
+              '-DFFX_FSR3UPSCALER_OPTION_ACCUMULATE_SAMPLERS_USE_DATA_HALF=0',
+              '-DFFX_FSR3UPSCALER_OPTION_REPROJECT_SAMPLERS_USE_DATA_HALF=1',
+              '-DFFX_FSR3UPSCALER_OPTION_POSTPROCESSLOCKSTATUS_SAMPLERS_USE_DATA_HALF=0',
+              '-DFFX_FSR3UPSCALER_OPTION_UPSAMPLE_USE_LANCZOS_TYPE=2'],
+        options=[(1 << 0, 'FFX_FSR3UPSCALER_OPTION_REPROJECT_USE_LANCZOS_TYPE'),
+                 (1 << 1, 'FFX_FSR3UPSCALER_OPTION_HDR_COLOR_INPUT'),
+                 (1 << 2, 'FFX_FSR3UPSCALER_OPTION_LOW_RESOLUTION_MOTION_VECTORS'),
+                 (1 << 3, 'FFX_FSR3UPSCALER_OPTION_JITTERED_MOTION_VECTORS'),
+                 (1 << 4, 'FFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH'),
+                 (1 << 5, 'FFX_FSR3UPSCALER_OPTION_APPLY_SHARPENING')],
+        force_wave64=1 << 6,
+        allow_fp16=1 << 7,
+        # The SDK accessor never selects these passes' 16-bit tables on desktop.
+        fp32_only=['fsr3upscaler_prepare_inputs', 'fsr3upscaler_rcas',
+                   'fsr3upscaler_luma_pyramid', 'fsr3upscaler_shading_change_pyramid',
+                   'fsr3upscaler_luma_instability', 'fsr3upscaler_debug_view'],
+        # ffx_fsr3upscaler.cpp allocations and shared-resource descriptions.
+        formats={'rw_reconstructed_previous_nearest_depth': 'r32ui',
+                 'rw_dilated_motion_vectors': 'rg16f', 'rw_dilated_depth': 'r32f',
+                 'rw_internal_upscaled_color': 'rgba16f', 'rw_accumulation': 'r8',
+                 'rw_luma_history': 'rgba16f', 'rw_shading_change': 'r8',
+                 'rw_farthest_depth': 'r16f', 'rw_farthest_depth_mip1': 'r16f',
+                 'rw_current_luma': 'r16f', 'rw_luma_instability': 'r16f',
+                 'rw_new_locks': 'r8', 'rw_dilated_reactive_masks': 'rgba8',
+                 'rw_output_autoreactive': 'r8', 'rw_output_autocomposition': 'r8',
+                 'rw_output_prev_color_pre_alpha': 'r11f_g11f_b10f',
+                 'rw_output_prev_color_post_alpha': 'r11f_g11f_b10f',
+                 'rw_frame_info': 'rgba32f', 'rw_spd_global_atomic': 'r32ui',
+                 **{f'rw_spd_mip{i}': 'rg16f' for i in range(6)}}),
+
 }
+
+EFFECTS.update(FRAMEGEN_EFFECTS)
 
 
 def run(command, log):
@@ -123,9 +177,10 @@ def main():
     a = p.parse_args()
     effect = EFFECTS[a.effect]
     stages = [name for name, _ in effect['passes']]
+    supported_stages = [name for name, stem in effect['passes'] if stem is not None]
     for name in a.pass_name or []:
-        if name not in stages:
-            p.error(f'{name} is not a pass of {a.effect}: {stages}')
+        if name not in supported_stages:
+            p.error(f'{name} is not a supported pass of {a.effect}: {supported_stages}')
     if a.options & effect['force_wave64']:
         p.error('forced wave64 is not supported: the Metal oracle cannot enforce a subgroup size')
     out = (a.output or CRATE / 'shaders/generated' / a.effect / f'options-{a.options:#04x}').resolve()
@@ -149,10 +204,11 @@ def main():
         raise SystemExit(f'{manifest_path} belongs to another effect')
     defines = [f'-D{define}={int(bool(a.options & bit))}' for bit, define in effect['options']]
     includes = [arg for directory in effect['includes'] for arg in ('-I', gpu / directory)]
-    for name in a.pass_name or stages:
+    for name in a.pass_name or supported_stages:
         half = bool(a.options & effect['allow_fp16']) and name not in effect.get('fp32_only', [])
         stem = dict(effect['passes'])[name]
-        source = SDK / f'src/backends/dx12/shaders/{a.effect}/ffx_{a.effect}_{stem}_pass.hlsl'
+        source = SDK / f'src/backends/dx12/shaders/{a.effect}' / effect.get('sources', {}).get(
+            name, f'ffx_{a.effect}_{stem}_pass.hlsl')
         # The wave32 arguments of gpu/CMakeCompileShaders.txt; HLSL 2021 is the
         # default of the DXC the SDK bundles (1.8.2403.2).
         command = [a.dxc.resolve(), '-spirv', '-fspv-target-env=vulkan1.1', '-T', 'cs_6_2', '-E', 'CS', '-HV', '2021',
@@ -173,16 +229,20 @@ def main():
         spv = json.loads((work / f'{name}.spirv.json').read_text())
         msl = {n: (k, int(i)) for n, k, i in re.findall(r'(\w+) \[\[(buffer|texture|sampler)\((\d+)\)\]\]', metal)}
         resources = []
-        for category, kind, register_class, shift in [
-                ('separate_images', 'texture', 't', SHIFTS['t']), ('separate_samplers', 'sampler', 's', SHIFTS['s']),
-                ('images', 'texture', 'u', SHIFTS['u']), ('ssbos', 'buffer', 'u', SHIFTS['u']),
-                ('ubos', 'constant_buffer', 'b', SHIFTS['b'])]:
+        for category, kind, register_class in [
+                ('separate_images', 'texture', 't'), ('separate_samplers', 'sampler', 's'),
+                ('images', 'texture', 'u'), ('ssbos', 'buffer', 'u'),
+                ('ubos', 'constant_buffer', 'b')]:
             for r in spv.get(category, []):
+                # SPIRV-Cross puts both StructuredBuffer and RWStructuredBuffer
+                # in ssbos; readonly reflection identifies the HLSL t register.
+                resource_class = 't' if category == 'ssbos' and r.get('readonly', False) else register_class
+                resource_shift = SHIFTS[resource_class]
                 name_in_shader = r['name'].removeprefix('type.')
                 for index in range(r.get('array', [1])[0]):
                     metal_kind, metal_index = msl[name_in_shader]
-                    resources.append(dict(name=name_in_shader, kind=kind, registerClass=register_class,
-                        register=r['binding'] - shift, arrayIndex=index, mslIndex=metal_index,
+                    resources.append(dict(name=name_in_shader, kind=kind, registerClass=resource_class,
+                        register=r['binding'] - resource_shift, arrayIndex=index, mslIndex=metal_index,
                         mslKind=metal_kind, byteSize=r.get('block_size', 0)))
         reflection = dict(metalEntryPoint='main0', workgroupSize=spv['entryPoints'][0]['workgroup_size'], resources=resources)
         (out / f'{name}.reflection.json').write_text(json.dumps(reflection, indent=2) + '\n')

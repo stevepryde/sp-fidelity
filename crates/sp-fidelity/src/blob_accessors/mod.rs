@@ -12,7 +12,10 @@ use super::error::*;
 use super::interface::FfxPass;
 use super::types::*;
 
+pub mod frameinterpolation_shaderblobs;
 pub mod fsr2_shaderblobs;
+pub mod fsr3upscaler_shaderblobs;
+pub mod opticalflow_shaderblobs;
 
 /// `ffxGetPermutationBlobByIndex`, for the effects this crate ports. Any
 /// other effect takes the SDK's `default` path: the assertion fails and the
@@ -21,7 +24,7 @@ pub mod fsr2_shaderblobs;
 pub fn ffx_get_permutation_blob_by_index(
     effect_id: FfxEffect,
     pass_id: FfxPass,
-    _stage_id: FfxBindStage,
+    stage_id: FfxBindStage,
     permutation_options: u32,
 ) -> Result<FfxShaderBlob, FfxErrorCode> {
     match effect_id {
@@ -31,6 +34,9 @@ pub fn ffx_get_permutation_blob_by_index(
                 permutation_options,
             );
         }
+        FfxEffect::Fsr3Upscaler => return fsr3upscaler_shaderblobs::fsr3_upscaler_get_permutation_blob_by_index(pass_id, permutation_options),
+        FfxEffect::OpticalFlow => return opticalflow_shaderblobs::opticalflow_get_permutation_blob_by_index(pass_id, permutation_options),
+        FfxEffect::FrameInterpolation => return frameinterpolation_shaderblobs::frame_interpolation_get_permutation_blob_by_index(pass_id, stage_id, permutation_options),
         FfxEffect::Breadcrumbs => {}
         _ => ffx_assert_message!(false, "Not implemented"),
     }
@@ -49,6 +55,21 @@ pub fn ffx_is_wave64(
     match effect_id {
         FfxEffect::Fsr2 => {
             return fsr2_shaderblobs::fsr2_is_wave64(permutation_options, is_wave64);
+        }
+        FfxEffect::Fsr3Upscaler => {
+            return fsr3upscaler_shaderblobs::fsr3_upscaler_is_wave64(
+                permutation_options,
+                is_wave64,
+            );
+        }
+        FfxEffect::OpticalFlow => {
+            return opticalflow_shaderblobs::opticalflow_is_wave64(permutation_options, is_wave64);
+        }
+        FfxEffect::FrameInterpolation => {
+            return frameinterpolation_shaderblobs::frame_interpolation_is_wave64(
+                permutation_options,
+                is_wave64,
+            );
         }
         FfxEffect::Breadcrumbs => {
             *is_wave64 = false;

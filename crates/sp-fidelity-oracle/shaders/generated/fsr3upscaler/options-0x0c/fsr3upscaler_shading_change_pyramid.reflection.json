@@ -1,0 +1,140 @@
+{
+  "metalEntryPoint": "main0",
+  "workgroupSize": [
+    256,
+    1,
+    1
+  ],
+  "resources": [
+    {
+      "name": "r_current_luma",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_previous_luma",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_dilated_motion_vectors",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 2,
+      "arrayIndex": 0,
+      "mslIndex": 2,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_input_exposure",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 3,
+      "arrayIndex": 0,
+      "mslIndex": 3,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_spd_mip0",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 4,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_spd_mip1",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 2,
+      "arrayIndex": 0,
+      "mslIndex": 5,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_spd_mip2",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 3,
+      "arrayIndex": 0,
+      "mslIndex": 6,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_spd_mip3",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 4,
+      "arrayIndex": 0,
+      "mslIndex": 7,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_spd_mip4",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 5,
+      "arrayIndex": 0,
+      "mslIndex": 8,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_spd_mip5",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 6,
+      "arrayIndex": 0,
+      "mslIndex": 9,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_spd_global_atomic",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 10,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "cbFSR3Upscaler",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "buffer",
+      "byteSize": 148
+    },
+    {
+      "name": "cbSPD",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "buffer",
+      "byteSize": 24
+    }
+  ]
+}

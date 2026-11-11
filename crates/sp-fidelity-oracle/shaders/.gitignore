@@ -11,3 +11,40 @@
 !/generated/fsr2/options-0x86/
 !/generated/fsr2/options-0xa5/
 !/generated/fsr2/options-0xa6/
+
+# FSR3 upscaler host oracle variants.
+/generated/fsr3upscaler/options-*/
+!/generated/fsr3upscaler/options-0x05/
+!/generated/fsr3upscaler/options-0x06/
+!/generated/fsr3upscaler/options-0x1b/
+!/generated/fsr3upscaler/options-0x1c/
+!/generated/fsr3upscaler/options-0x3b/
+!/generated/fsr3upscaler/options-0x3c/
+!/generated/fsr3upscaler/options-0x85/
+!/generated/fsr3upscaler/options-0x86/
+!/generated/fsr3upscaler/options-0xa5/
+!/generated/fsr3upscaler/options-0xa6/
+
+# Additional FSR3 conformance scenarios.
+!/generated/fsr3upscaler/options-0x84/
+!/generated/fsr3upscaler/options-0xa4/
+!/generated/fsr3upscaler/options-0x0c/
+!/generated/fsr3upscaler/options-0x2c/
+!/generated/fsr3upscaler/options-0x18/
+!/generated/fsr3upscaler/options-0x98/
+!/generated/fsr3upscaler/options-0x38/
+!/generated/fsr3upscaler/options-0xb8/
+
+# Original-HLSL frame generation oracle artifacts.
+!/generated/opticalflow/**
+!/generated/frameinterpolation/**
+
+# Additional host and composite API scenarios.
+!/generated/fsr3upscaler/options-0x04/
+!/generated/fsr3upscaler/options-0x0e/
+!/generated/fsr3upscaler/options-0x26/
+!/generated/fsr3upscaler/options-0x1a/
+!/generated/fsr3upscaler/options-0x24/
+!/generated/fsr3upscaler/options-0x8c/
+!/generated/fsr3upscaler/options-0xac/
+!/generated/fsr3upscaler/options-0x3a/

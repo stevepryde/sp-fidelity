@@ -101,6 +101,37 @@ impl Recorder {
 }
 
 impl FfxInterface for Recorder {
+    fn swap_chain_configure_frame_generation(
+        &mut self,
+        c: &FfxFrameGenerationConfig,
+    ) -> Result<(), FfxErrorCode> {
+        self.events.push(json!([
+            "frame-generation-config",
+            c.swap_chain,
+            u32::from(c.present_callback.is_some()),
+            u32::from(c.frame_generation_callback.is_some()),
+            u32::from(c.frame_generation_enabled),
+            u32::from(c.allow_async_workloads),
+            u32::from(c.allow_async_present),
+            if c.hudless_color.resource == 0 {
+                "NULL"
+            } else {
+                &c.hudless_color.name
+            },
+            c.flags,
+            u32::from(c.only_present_interpolated),
+            [
+                c.interpolation_rect.left,
+                c.interpolation_rect.top,
+                c.interpolation_rect.width,
+                c.interpolation_rect.height
+            ],
+            c.frame_id,
+            u32::from(c.draw_debug_pacing_lines)
+        ]));
+        Ok(())
+    }
+
     fn device(&self) -> FfxDevice {
         1
     }
@@ -264,6 +295,7 @@ impl FfxInterface for Recorder {
             srv_texture_bindings: expand(blob.bound_srv_textures),
             uav_texture_bindings: expand(blob.bound_uav_textures),
             uav_buffer_bindings: expand(blob.bound_uav_buffers),
+            srv_buffer_bindings: expand(blob.bound_srv_buffers),
             constant_buffer_bindings: expand(blob.bound_constant_buffers),
             name: desc.name.clone(),
             ..Default::default()
@@ -316,6 +348,18 @@ impl FfxInterface for Recorder {
 
     fn schedule_gpu_job(&mut self, job: &FfxGpuJobDescription) -> Result<(), FfxErrorCode> {
         let event = match &job.descriptor {
+            FfxGpuJobDescriptor::Discard(c) => {
+                json!(["discard", self.name(c.target), job.job_label])
+            }
+            FfxGpuJobDescriptor::Barrier(c) => json!([
+                "barrier",
+                self.name(c.resource),
+                c.barrier_type as u32,
+                c.current_state,
+                c.new_state,
+                c.sub_resource_id,
+                job.job_label
+            ]),
             FfxGpuJobDescriptor::ClearFloat(c) => {
                 json!([
                     "clear",
@@ -347,6 +391,9 @@ impl FfxInterface for Recorder {
                 }
                 for (b, r) in p.uav_buffer_bindings.iter().zip(&c.uav_buffers) {
                     bound.push(binding("buffer", b, r.resource, 0));
+                }
+                for (b, r) in p.srv_buffer_bindings.iter().zip(&c.srv_buffers) {
+                    bound.push(binding("srv-buffer", b, r.resource, 0));
                 }
                 let constants: Vec<_> = p
                     .constant_buffer_bindings

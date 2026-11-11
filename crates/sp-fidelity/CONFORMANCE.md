@@ -7,8 +7,9 @@ Authority: FidelityFX SDK 1.1.4, revision
 behind a recording `FfxInterface`, and the DXC-compiled unchanged pass HLSL on
 Metal replaying each pass from the inputs the port's WGSL received.
 
-FSR2 (SDK component 2.x as shipped in 1.1.4) is the ported effect. The host
-core, `ffx_core.wgsl` and `spd/ffx_spd.wgsl` are verified here through FSR2.
+FSR2 and FSR3.1.4 (upscaler, optical flow, frame interpolation and the
+composite FSR3 host) are ported from that same revision. The original FSR2
+results below are retained. The host core, `ffx_core.wgsl` and `spd/ffx_spd.wgsl` are verified here through FSR2.
 Results are from Apple M5, Metal, wgpu 30.0.1 (MSL 4.0), DXC 1.9.0.5399
 (HLSL 2021, the SDK's bundled compiler default), SPIRV-Cross 1.4.357,
 2026-10-06.
@@ -82,9 +83,207 @@ offsets, with the unadapted dispatch as failing control) and
 `clear_float_job_writes_its_color_to_each_cleared_sdk_format` hold for any
 effect.
 
+## FSR3.1.4 host
+
+Added source files are retained unmodified at the existing SDK revision.
+The four host oracles compare every backend event and resource initialization
+byte against the original C++. Debug and release builds exercise the same
+API streams; the comparison does not substitute a Rust model for the SDK.
+
+| Component | Evidence | Matching events |
+| --- | --- | ---: |
+| FSR3 upscaler | Helpers, Native AA, runtime tuning and clamp/default behavior, HDR, exposure, dynamic resolution, shared resources, reset, reactive generation, debug/error messages, FP16 and wave64 table selection | 18,426 |
+| Optical flow | Three context sequences, changing frame/reset state and resolutions, FP32/FP16/wave64 table selection, rejected calls | 7,352 |
+| Frame interpolation | 69 context attempts, all 64 flag combinations, preparation and interpolation, asynchronous frame IDs, resets and format conversion | 38,665 |
+| Composite FSR3 | Five scenarios in one application stream: synchronous and asynchronous resource rings, delayed callbacks, enable/disable, destruction, upscaling-only and HDR routing | 5,517 |
+
+Files: `tests/fsr3upscaler_host_event_stream.rs`,
+`tests/opticalflow_host_event_stream.rs`,
+`tests/frameinterpolation_host_event_stream.rs`, and
+`tests/fsr3_host_event_stream.rs` in the oracle crate.
+
+Optical flow's C++ local `OpticalFlowSpdConstants` leaves the last three
+padding words uninitialized (`ffx_opticalflow.cpp`, structure at lines 92–103,
+staging at 636–642). The oracle ignores only these three unused words; all
+initialized words compare bit for bit. The Rust structure initializes its
+padding to zero. DXC removes this constant buffer from the fixed-six-mip
+shader entirely.
+
+The oracle's 16-bit `wchar_t` compatibility layer supplies Windows `%s%d`
+wide formatting and a locally instantiated string traits type. This avoids
+calling macOS's 32-bit wide-string ABI when the unchanged SDK builds resource
+names or optical-flow labels. These labels remain part of the comparisons.
+
+### FSR3 GPU evidence
+
+GPU evidence was collected on Apple M5 using the pinned DXC/SPIRV-Cross
+translation and the actual wgpu Metal backend. All 1,408 upscaler and 204
+frame-generation shader exports compile as Metal pipelines. Naga validates
+1,280 upscaler, 176 frame-interpolation, and 28 optical-flow pass/permutation
+combinations. Wave64 reflection coverage is host-only.
+
+The upscaler's 64 meaningful GPU contexts capture 10,368 UAV/mip outputs.
+The final sweep produced 9,658 exact outputs and 710 differences, all in accumulation,
+accumulation with sharpening, or luminance frame information. Every captured
+prepare-input, prepare-reactivity, luma-instability, shading-change, debug,
+reactive-generation, and RCAS output matched exactly in that sweep. Separate
+auto-exposure sequences exercise the shading-pyramid threshold boundary.
+
+Strict controls distinguish compiler behavior from port arithmetic. DXC folds
+the two rectification divisions by 20 into multiplication by the rounded f32
+reciprocal, while SPIRV-Cross emits `fast::normalize` and Naga emits regular
+`metal::normalize`, even with Metal fast math disabled. With the reciprocal
+folds applied, raw strict replay has 820 exact accumulation outputs and 12
+one-texel differences. A separately labelled builtin-aligned control compares
+all 832 outputs exactly. Six temporal scenarios add 932 ordinary outputs
+(818 exact, 114 compiler/race diagnostics), 78 raw strict accumulation outputs
+(75 exact, 3 different), and 78/78 exact builtin-aligned outputs. FP16 history
+sampling was also independently bitexact before rectification. These controls
+do not edit the vendored HLSL, exported oracle shaders, or runtime WGSL.
+
+A one-workgroup shading-pyramid control compares all 35 mip snapshots exactly
+in each precision with strict compilation. Normal Metal fast math can change
+which side of the original minimum-luma-difference threshold a value falls
+on; the sign reduction amplifies that into sparse 0.25 differences. This is
+reported as SDK-P22 compiler behavior, without a general numeric tolerance.
+The one-workgroup luminance control compares all 45 snapshots exactly in
+each precision after applying DXC's evidenced exposure folds only in its
+strict diagnostic copy: `(Lavg * 100) / 12.5` becomes `Lavg * 8`, and the
+reciprocal of `78 / (0.65 * 100)` becomes the rounded f32 value
+`0.833333313465118408203125` ahead of the final division.
+
+FSR3's multi-workgroup luminance epilogue also inherits SDK-P14: captured
+frame-info luma can read the prior mip-5 publication while the final mip-5
+snapshots themselves agree. Single-workgroup controls isolate this boundary.
+
+Frame interpolation exercises all eight meaningful shader keys over sixteen
+prepared/interpolated frames each, plus 8×8, 32×32, and 64×64 controls.
+The controls compare every captured output exactly in both identical-input
+replay and independent history. Across all eleven cases, identical-input
+replay produced 4,934 exact dumps and 194 SDK-P14 mip-6 differences;
+independent history produced 4,917 exact dumps, 195 direct SDK-P14 differences,
+and 16 unchanged mip-6 values inherited from a prior racy dispatch.
+
+These exceptions are restricted to the single mip-6 texel of the two FI SPD
+pyramids. The original trace must establish a multi-workgroup epilogue and
+mip 5 must compare exactly. An inherited value must match that side's last
+actual writer, with the port's pre/post-job bytes unchanged. No general
+floating-point tolerance is used. The original SPD publication issue is
+retained rather than changing the algorithm; see SDK-P14 below.
+
+Optical flow exercises two 24-frame sequences, including odd dimensions,
+Texture1D allocation, all three transfer functions, resets, and nonzero
+motion. Same-input replay produced 1,639 exact snapshots and 41 SDK-P32
+scene-detection snapshots, with the completed-workgroup counter exact.
+Independent histories produced 1,469 exact snapshots and 211 race-tainted
+differences, reported as diagnostics rather than equality.
+
+The runnable `sp-fidelity-wgpu/examples/fsr3.rs` executes four complete
+composite frames with configuration and weak generation callbacks, upscaling,
+optical flow, interpolation, an RGBA8 output, and GPU readback.
+
+The final workspace validation includes `cargo fmt --check`,
+`cargo clippy --workspace --all-targets -- -D warnings`,
+`SP_FIDELITY_REQUIRE_GPU=1 cargo test --workspace`,
+`cargo doc --no-deps --workspace`, and compilation of both runtime crates and
+all their targets for `wasm32-unknown-unknown`. GPU oracle suites are selected
+explicitly as described in the oracle README; ordinary workspace tests leave
+them ignored. The FSR2 host comparisons and backend GPU regressions still pass.
+
+### FSR3 host adaptations and retained upstream behavior
+
+- The composite SDK's global raw context pointer becomes an explicit context
+  argument and a weak callback returned by
+  `ffx_fsr3_get_frame_generation_callback`. The callback returns
+  `INVALID_POINTER` after destruction; overlapping mutable access returns
+  `INVALID_ARGUMENT`. Contexts, callbacks, and shared backend interfaces are
+  confined to their creating thread. Multiple contexts do not share a global
+  active pointer in the Rust API.
+- The three composite wgpu interfaces are clones of one backend, since its
+  resource and command-list handles belong to that instance. Presentation
+  configuration is forwarded to an application adapter; wgpu does not
+  implement the SDK's DXGI/Vulkan proxy swapchains, OS presentation threads,
+  UI composition or frame pacing. The compute algorithms and SDK dispatch
+  sequencing are independent of that presentation adapter.
+- The original composite create function never assigns its private
+  `upscalingOnly` and `interpolationOnly` fields. Their zero state is
+  preserved. Interpolation-only composite creation consequently reaches an
+  absent upscaler context; Rust returns `INVALID_POINTER` instead of
+  dereferencing it. Use the standalone frame-interpolation API for this
+  mode. The composite source also never forwards `upscaleSize`; Rust retains
+  the upstream zero-size fallback. The original `ffxFsr3SkipPresent`
+  declaration has no definition in the pinned SDK and is not exported.
+- The frame-interpolation debug-color counter is process-global as upstream;
+  Rust uses an atomic counter instead of an unsynchronized mutable static.
+
+### FSR3 GPU and backend adaptations
+
+- SDK discard jobs require no operation for separately allocated wgpu
+  resources. Explicit transition barriers are represented by wgpu's resource
+  tracking between compute passes. The original jobs remain in host traces.
+- SPD's FSR3 `R16G16_FLOAT` mip chain is physically RGBA16F because Metal
+  cannot bind RG16F for read/write. Only `.xy` are used, retaining half-float
+  rounding. Descriptions and oracle files keep the SDK's two-channel layout.
+- Return-valued texture atomics use coherent packed buffers: FI game-vector
+  X/Y fields and the shared optical-flow SCD output, histogram, and temporary
+  reduction counters. Metal can optimize away Naga's atomic-texture visibility
+  workaround when coordinates are provably bounded; coherent buffer atomics
+  avoid that compiler hazard without adding an algorithmic synchronization. Optical-flow search
+  packs two signed 16-bit vectors into one word because Metal cannot bind
+  RG16Sint for read/write. Texture-to-buffer and buffer-to-texture passes
+  retain the original texture handles and contents at effect/application
+  boundaries. Other passes retain the original typed texture formats.
+- Frame-interpolation output storage formats are specialized from the actual
+  bound output texture, with cached pipeline variants. Its SDK compute
+  pipeline descriptions correctly retain `Unknown` backbuffer format; the
+  unused raster-pipeline lambda is not used as a source of configuration.
+- Optical flow's optional 1D resources are allocated as one-row 2D textures
+  because its original HLSL still declares Texture2D bindings
+  (`ffx_opticalflow_callbacks_hlsl.h:209,250–265`). SDK descriptions retain
+  Texture1D; only the backend allocation changes.
+- wgpu frame-generation resources require storage-capable typed color formats.
+  BGRA8 storage requires the caller's device to enable `BGRA8UNORM_STORAGE`.
+  Typeless and sRGB storage formats have no WGSL equivalent; callers use
+  linear-format storage and the SDK transfer-function parameters. Host format
+  validation is still ported exactly, including its original precision groups.
+- Native-only texture atomics require `STORAGE_ATOMIC` usage on caller-created
+  R32Uint textures. SDK-created resources get it automatically.
+- WGSL pass assembly retains SDK permutation defines, including FP32 SPD
+  overrides. Unreachable resource loads that DXC eliminates are omitted where
+  Naga retains them; this preserves the original reflection tables rather
+  than adding bindings. MSL packed vec3 structure members use local copy-in/out
+  variables for inout calls. Explicit load bounds preserve HLSL zero-outside
+  semantics instead of Metal's coordinate-clamping robustness behavior.
+- Portable optical-flow wave operations use workgroup reductions with the
+  original integer tree/order; SCD wave-lockstep float reductions have explicit
+  workgroup synchronization. Forced wave64 remains unsupported under SDK-P6.
+
+- FI SPD declares twelve mip UAVs even for smaller textures. Missing mips
+  bind distinct inert 1×1 storage views: clamping every missing view to the
+  last real mip creates mixed storage-access aliases rejected by wgpu.
+  The original SPD mip-count guards prevent access to these views
+  (`ffx_spd.h:496–511,538`). Existing real mip views remain unchanged.
+
+### SDK-P32 — optical-flow scene-detection race
+
+The original `ffx_opticalflow_compute_scd_divergence.h` reads the current
+histogram at line 41 and previous histogram at line 102. The y=1 workgroups
+replace the previous histogram and clear the current histogram at lines
+153–155 while y=0/y=2 workgroups may still read them. There is no dispatch-wide
+synchronization. Repeating the unchanged HLSL with identical captured inputs
+changed scene-detection results in 17 of 24 frames on Apple M5. One frame
+changed from approximately 0.773105/history 1 to 0.110342/history 0.
+
+The port retains this upstream algorithm. Same-input replay compares every
+vector and histogram output exactly; only scene-change scalar/history words
+0 and 1 of the SCD output are classified as nondeterministic. Completed-counter
+word 2 must remain exact. Independent histories can then diverge when scene
+change resets motion search; those trajectories are reported as tainted
+history diagnostics, not successful exact comparisons or numeric tolerances.
+
 ## Differences and platform adaptations
 
-The runtime crates support WASM compilation with the WebGPU backend. FSR2
+The runtime crates support WASM compilation with the WebGPU backend. FSR2 and FSR3
 execution still requires native-only GPU features; no browser GPU conformance
 is claimed. This build adaptation changes neither the SDK algorithms nor
 the shaders or conformance counts above.

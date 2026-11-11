@@ -56,11 +56,13 @@ static PixelFormat format(size_t value) {
         case 3: return {MTLPixelFormatRGBA32Float, 16};
         case 4: return {MTLPixelFormatRGBA16Float, 8};
         case 6: return {MTLPixelFormatRG32Float, 8};
+        case 7: return {MTLPixelFormatR8Uint, 1};
         case 8: return {MTLPixelFormatR32Uint, 4};
         case 10: return {MTLPixelFormatRGBA8Unorm, 4};
         case 16: return {MTLPixelFormatRG11B10Float, 4};
         case 17: return {MTLPixelFormatRGB10A2Unorm, 4};
         case 18: return {MTLPixelFormatRG16Float, 4};
+        case 20: return {MTLPixelFormatRG16Sint, 4};
         case 21: return {MTLPixelFormatR16Float, 2};
         case 24: return {MTLPixelFormatR16Snorm, 2};
         case 25: return {MTLPixelFormatR8Unorm, 1};
@@ -70,9 +72,12 @@ static PixelFormat format(size_t value) {
     }
     __builtin_unreachable();
 }
-// One texel of a ClearFloat colour in an SDK format, as the D3D12 backend's
-// ClearUnorderedAccessViewFloat stores it. Formats without an exact encoding
-// here accept only zero.
+// One texel of an SDK ClearFloat colour. SDK 1.1.4's Vulkan backend fills
+// VkClearColorValue.float32; the image format selects the union's numeric
+// interpretation. The DX12 backend likewise reinterprets all four float
+// words before ClearUnorderedAccessViewUint (ffx_dx12.cpp:3078-3083).
+// Integer depth UAVs therefore receive the float's bits, not its numeric
+// integer conversion. Formats without an exact encoding here accept zero.
 static std::vector<uint8_t> clearTexel(size_t fmt, const float color[4]) {
     std::vector<uint8_t> texel(format(fmt).bytes, 0);
     auto put = [&](auto value, size_t channel) { std::memcpy(texel.data() + channel * sizeof value, &value, sizeof value); };
@@ -81,6 +86,7 @@ static std::vector<uint8_t> clearTexel(size_t fmt, const float color[4]) {
         case 3: channels = 4; break;
         case 6: channels = 2; break;
         case 28: channels = 1; break;
+        case 8: std::memcpy(texel.data(), color, sizeof(uint32_t)); return texel;
         case 4: for (size_t c = 0; c < 4; ++c) put(_Float16(color[c]), c); return texel;
         case 18: for (size_t c = 0; c < 2; ++c) put(_Float16(color[c]), c); return texel;
         case 21: put(_Float16(color[0]), 0); return texel;
@@ -297,12 +303,10 @@ class Oracle {
                                                    encoding:NSUTF8StringEncoding error:&error];
         if (!source) fail("read native Metal shader", error);
         MTLCompileOptions* options = [[MTLCompileOptions alloc] init];
-        if (compilerMode == "strict") {
-            options.languageVersion = MTLLanguageVersion2_3;
-            options.fastMathEnabled = NO;
-        } else if (compilerMode == "wgpu") {
-            // Match wgpu-hal 30 metal/adapter.rs and metal/device.rs.
-            // Crucially, wgpu leaves fast math at MTLCompileOptions' default.
+        if (compilerMode == "strict" || compilerMode == "wgpu") {
+            // Match wgpu-hal 30 metal/adapter.rs and metal/device.rs in both
+            // modes: original texture atomics require Metal 3.1 or newer.
+            // Strict changes floating-point optimization, not language support.
             if (@available(macOS 26.0, *)) options.languageVersion = MTLLanguageVersion4_0;
             else if (@available(macOS 15.0, *)) options.languageVersion = MTLLanguageVersion3_2;
             else if (@available(macOS 14.0, *)) options.languageVersion = MTLLanguageVersion3_1;
@@ -310,6 +314,7 @@ class Oracle {
             else if (@available(macOS 12.0, *)) options.languageVersion = MTLLanguageVersion2_4;
             else options.languageVersion = MTLLanguageVersion2_3;
             options.preserveInvariance = YES;
+            if (compilerMode == "strict") options.fastMathEnabled = NO;
         }
         compilerOptions = @{@"mode":ns(compilerMode), @"languageVersion":@(options.languageVersion),
             @"fastMathEnabled":@(options.fastMathEnabled), @"preserveInvariance":@(options.preserveInvariance)};
@@ -406,7 +411,8 @@ class Oracle {
         std::set<std::string> written;
         for (NSArray* binding in (NSArray*)event[5]) {
             bindings[str(binding[1])].push_back(binding);
-            if (str(binding[0]) != "srv") written.insert(str(binding[2]));
+            const std::string access = str(binding[0]);
+            if (access != "srv" && access != "srv-buffer") written.insert(str(binding[2]));
         }
         if (captureInputs) {
             std::set<std::string> observed;
@@ -420,6 +426,9 @@ class Oracle {
         std::array<uint32_t, 3> dispatched{};
         const auto encode = [&](id<MTLComputeCommandEncoder> encoder) {
             [encoder setComputePipelineState:p.state];
+            NSArray* workgroupMemory = p.reflection[@"workgroupMemorySizes"];
+            for (NSUInteger index = 0; index < workgroupMemory.count; ++index)
+                [encoder setThreadgroupMemoryLength:num(workgroupMemory[index]) atIndex:index];
             if (p.diagnosticTrace)
                 [encoder setBuffer:p.diagnosticTrace offset:0
                            atIndex:num(p.reflection[@"diagnosticTrace"][@"mslIndex"])];
@@ -449,8 +458,10 @@ class Oracle {
                     } else {
                         id<MTLTexture> texture = r.texture;
                         if (str(bound[0]) == "uav") {
-                            const size_t mip = num(bound[3]);
-                            if (mip >= r.mips) fail("original UAV mip outside allocation");
+                            // SDK 1.1.4's Vulkan backend clamps fixed SPD UAV
+                            // slots to the allocation's last mip
+                            // (ffx_vk.cpp:3769-3771).
+                            const size_t mip = std::min(num(bound[3]), r.mips - 1);
                             texture = [r.texture newTextureViewWithPixelFormat:r.texture.pixelFormat
                                                                   textureType:MTLTextureType2D
                                                                        levels:NSMakeRange(mip, 1)
@@ -519,7 +530,7 @@ class Oracle {
         std::cout << "frame " << frame << ' ' << names[stage] << " groups="
                   << dispatched[0] << ',' << dispatched[1] << ',' << dispatched[2] << '\n';
     }
-    // ClearUnorderedAccessViewFloat on the target's UAV, which is its mip 0.
+    // Clear the target's UAV, which is its mip 0.
     void clear(const std::string& name, NSArray* bits) {
         Resource& r = resource(name);
         if (!r.texture) fail("clear of buffer " + name);
@@ -593,7 +604,9 @@ public:
                     if (kind == "resource") {
                         const std::string name = str(event[1]);
                         const size_t type = num(event[2]), initType = num(event[8]);
-                        if (type != 0 && type != 2) fail("unsupported FfxResourceType " + std::to_string(type) + " for " + name);
+                        // Optical flow's optional 1D allocations retain 2D HLSL
+                        // bindings; represent their single row as a 2D texture.
+                        if (type != 0 && type != 1 && type != 2) fail("unsupported FfxResourceType " + std::to_string(type) + " for " + name);
                         create(name, type == 0, num(event[3]), num(event[4]), num(event[5]), num(event[6]), 1, num(event[7]), false);
                         // FFX_RESOURCE_INIT_DATA_TYPE_BUFFER: the C++ host exported AMD's data.
                         if (initType == 2) { auto data = bytes(inputDir / (name + ".bin")); upload(resource(name), &data); }
@@ -623,9 +636,14 @@ public:
                     else if (kind != "create-result" && kind != "dispatch-result" && kind != "destroy-result"
                              && kind != "constants" && kind != "execute" && kind != "unregister" && kind != "destroy-context"
                              && kind != "destroy-resource" && kind != "destroy-pipeline" && kind != "register"
-                             && kind != "message" && kind != "memory-usage" && kind != "memory-usage-result"
-                             && kind != "generate-reactive-result")
+                             && kind != "message" && kind != "version" && kind != "memory-usage" && kind != "memory-usage-result"
+                             && kind != "generate-reactive-result" && kind != "configure-result"
+                             && kind != "shared-result" && kind != "shared-resource"
+                             && kind != "prepare-result" && kind != "discard" && kind != "barrier")
                         fail("unsupported original trace event " + kind);
+                    // Barriers need no translation because command completion is
+                    // synchronous. Discard is a contents hint: every resource has
+                    // its own allocation, so there is no aliased memory to reuse.
                     // Execute is already ordered by synchronous command completion;
                     // compute jobs carry their constants; registration, messages,
                     // memory queries and unregister/destroy/result records do not

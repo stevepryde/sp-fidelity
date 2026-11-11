@@ -1,7 +1,7 @@
 //! AMD's unchanged C++ host (`oracle/host.cpp`, an effect driver and the
 //! vendored SDK sources), driven by a word stream.
 use serde_json::Value;
-use sp_fidelity::types::FfxDeviceCapabilities;
+use sp_fidelity::types::{FfxDeviceCapabilities, FfxEffect};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -46,6 +46,15 @@ pub fn sdk() -> PathBuf {
 /// (pass, permutation options) variant, as AMD's generated per-permutation
 /// tables are.
 pub fn build_cpp_host(directory: &Path, effect: &Effect) -> (PathBuf, PathBuf) {
+    build_cpp_composite_host(directory, effect, &[])
+}
+
+/// Build a composite SDK host with independently reflected constituent effects.
+pub fn build_cpp_composite_host(
+    directory: &Path,
+    effect: &Effect,
+    components: &[(FfxEffect, &Effect)],
+) -> (PathBuf, PathBuf) {
     fs::create_dir_all(directory).unwrap();
     let executable = directory.join("cpp-host");
     let sdk = sdk();
@@ -99,7 +108,23 @@ pub fn build_cpp_host(directory: &Path, effect: &Effect) -> (PathBuf, PathBuf) {
         String::from_utf8_lossy(&output.stderr)
     );
     let bindings = directory.join("shader-bindings.txt");
-    fs::write(&bindings, shader_bindings(effect)).unwrap();
+    let reflected = if components.is_empty() {
+        shader_bindings(effect)
+    } else {
+        components
+            .iter()
+            .map(|(id, component)| {
+                shader_bindings(component)
+                    .lines()
+                    .map(|line| {
+                        let (_, rest) = line.split_once(' ').unwrap();
+                        format!("{} {rest}\n", *id as u32)
+                    })
+                    .collect::<String>()
+            })
+            .collect()
+    };
+    fs::write(&bindings, reflected).unwrap();
     (executable, bindings)
 }
 
@@ -142,6 +167,7 @@ fn shader_bindings(effect: &Effect) -> String {
                     ("texture", "t") => "srv",
                     ("texture", "u") => "uav",
                     ("buffer", "u") => "buffer",
+                    ("buffer", "t") => "srv-buffer",
                     ("constant_buffer", "b") => "cb",
                     ("sampler", "s") => continue,
                     other => panic!("new original shader resource shape: {other:?}"),
@@ -149,7 +175,7 @@ fn shader_bindings(effect: &Effect) -> String {
                 for options in &tables {
                     let _ = writeln!(
                         text,
-                        "{stage} {options} {kind} {} {} {}",
+                        "4294967295 {stage} {options} {kind} {} {} {}",
                         r["register"],
                         r["arrayIndex"],
                         r["name"].as_str().unwrap()

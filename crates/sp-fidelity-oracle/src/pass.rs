@@ -934,6 +934,29 @@ pub fn strict_variants(
     )
     .unwrap();
 
+    // Naga emits used workgroup globals as dynamic Metal threadgroup
+    // arguments. Match wgpu-hal's allocation, including 16-byte alignment.
+    let ep_index = module
+        .entry_points
+        .iter()
+        .position(|entry| {
+            entry.name == FFX_WGSL_ENTRY_POINT && entry.stage == wgpu::naga::ShaderStage::Compute
+        })
+        .unwrap();
+    let ep_info = info.get_entry_point(ep_index);
+    let workgroup_memory_sizes: Vec<u32> = module
+        .global_variables
+        .iter()
+        .filter(|(handle, var)| {
+            var.space == wgpu::naga::AddressSpace::WorkGroup && !ep_info[*handle].is_empty()
+        })
+        .map(|(_, var)| {
+            module.types[var.ty]
+                .inner
+                .size(module.to_ctx())
+                .next_multiple_of(16)
+        })
+        .collect();
     let entry = manifest["passes"][stage].take();
     manifest["passes"] = json!({ stage: entry });
     let original_msl = fs::read_to_string(original.join(format!("{stage}.metal"))).unwrap();
@@ -953,6 +976,11 @@ pub fn strict_variants(
         )
         .unwrap();
         reflection["metalEntryPoint"] = entry;
+        reflection["workgroupMemorySizes"] = if name == "port" {
+            json!(workgroup_memory_sizes)
+        } else {
+            json!([])
+        };
         fs::write(
             variant.join(format!("{stage}.reflection.json")),
             serde_json::to_vec_pretty(&reflection).unwrap(),

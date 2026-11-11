@@ -45,24 +45,140 @@ const MODULES: &[(&str, &str)] = modules![
     "fsr2/ffx_fsr2_autogen_reactive_pass.wgsl",
     "fsr2/ffx_fsr2_tcr_autogen.wgsl",
     "fsr2/ffx_fsr2_tcr_autogen_pass.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_accumulate.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_accumulate_pass.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_autogen_reactive_pass.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_callbacks.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_common.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_debug_view.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_debug_view_pass.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_luma_instability.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_luma_instability_pass.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_luma_pyramid.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_luma_pyramid_pass.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_prepare_inputs.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_prepare_inputs_pass.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_prepare_reactivity.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_prepare_reactivity_pass.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_rcas_pass.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_reproject.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_resources.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_sample.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_shading_change.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_shading_change_pass.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_shading_change_pyramid.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_shading_change_pyramid_pass.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_upsample.wgsl",
+    "frameinterpolation/ffx_frameinterpolation.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_callbacks.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_common.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_compute_game_vector_field_inpainting_pyramid.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_compute_game_vector_field_inpainting_pyramid_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_compute_inpainting_pyramid.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_compute_inpainting_pyramid_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_debug_view.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_debug_view_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_disocclusion_mask.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_disocclusion_mask_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_game_motion_vector_field.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_game_motion_vector_field_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_inpainting.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_inpainting_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_optical_flow_vector_field.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_optical_flow_vector_field_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_reconstruct_and_dilate_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_reconstruct_dilated_velocity_and_previous_depth.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_reconstruct_previous_depth.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_reconstruct_previous_depth_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_resources.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_setup.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_setup_pass.wgsl",
+    "opticalflow/ffx_opticalflow_callbacks.wgsl",
+    "opticalflow/ffx_opticalflow_common.wgsl",
+    "opticalflow/ffx_opticalflow_compute_luminance_pyramid.wgsl",
+    "opticalflow/ffx_opticalflow_compute_scd_divergence.wgsl",
+    "opticalflow/ffx_opticalflow_filter_optical_flow_v5.wgsl",
+    "opticalflow/ffx_opticalflow_generate_scd_histogram.wgsl",
+    "opticalflow/ffx_opticalflow_prepare_luma.wgsl",
+    "opticalflow/ffx_opticalflow_resources.wgsl",
+    "opticalflow/ffx_opticalflow_scale_optical_flow_advanced_v5.wgsl",
+    "opticalflow/ffx_opticalflow_compute_luminance_pyramid_pass.wgsl",
+    "opticalflow/ffx_opticalflow_compute_optical_flow_advanced_pass_v5.wgsl",
+    "opticalflow/ffx_opticalflow_compute_optical_flow_v5.wgsl",
+    "opticalflow/ffx_opticalflow_compute_scd_divergence_pass.wgsl",
+    "opticalflow/ffx_opticalflow_filter_optical_flow_pass_v5.wgsl",
+    "opticalflow/ffx_opticalflow_generate_scd_histogram_pass.wgsl",
+    "opticalflow/ffx_opticalflow_prepare_luma_pass.wgsl",
+    "opticalflow/ffx_opticalflow_scale_optical_flow_advanced_pass_v5.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_rcas.wgsl",
 ];
 
 /// The compile defines an effect's SDK shader build gives every pass and
 /// permutation, by pass shader-name prefix: FSR2's `FSR2_BASE_ARGS`
 /// (`gpu/fsr2/CMakeCompileFSR2Shaders.txt`).
-const EFFECT_DEFINES: &[(&str, &[(&str, &str)])] = &[(
-    "ffx_fsr2_",
-    &[
-        ("FFX_FSR2_OPTION_UPSAMPLE_SAMPLERS_USE_DATA_HALF", "0"),
-        ("FFX_FSR2_OPTION_ACCUMULATE_SAMPLERS_USE_DATA_HALF", "0"),
-        ("FFX_FSR2_OPTION_REPROJECT_SAMPLERS_USE_DATA_HALF", "1"),
-        (
-            "FFX_FSR2_OPTION_POSTPROCESSLOCKSTATUS_SAMPLERS_USE_DATA_HALF",
-            "0",
-        ),
-        ("FFX_FSR2_OPTION_UPSAMPLE_USE_LANCZOS_TYPE", "2"),
-    ],
-)];
+const EFFECT_DEFINES: &[(&str, &[(&str, &str)])] = &[
+    (
+        "ffx_fsr2_",
+        &[
+            ("FFX_FSR2_OPTION_UPSAMPLE_SAMPLERS_USE_DATA_HALF", "0"),
+            ("FFX_FSR2_OPTION_ACCUMULATE_SAMPLERS_USE_DATA_HALF", "0"),
+            ("FFX_FSR2_OPTION_REPROJECT_SAMPLERS_USE_DATA_HALF", "1"),
+            (
+                "FFX_FSR2_OPTION_POSTPROCESSLOCKSTATUS_SAMPLERS_USE_DATA_HALF",
+                "0",
+            ),
+            ("FFX_FSR2_OPTION_UPSAMPLE_USE_LANCZOS_TYPE", "2"),
+        ],
+    ),
+    (
+        "ffx_fsr3upscaler_",
+        &[
+            (
+                "FFX_FSR3UPSCALER_OPTION_UPSAMPLE_SAMPLERS_USE_DATA_HALF",
+                "0",
+            ),
+            (
+                "FFX_FSR3UPSCALER_OPTION_ACCUMULATE_SAMPLERS_USE_DATA_HALF",
+                "0",
+            ),
+            (
+                "FFX_FSR3UPSCALER_OPTION_REPROJECT_SAMPLERS_USE_DATA_HALF",
+                "1",
+            ),
+            (
+                "FFX_FSR3UPSCALER_OPTION_POSTPROCESSLOCKSTATUS_SAMPLERS_USE_DATA_HALF",
+                "0",
+            ),
+            ("FFX_FSR3UPSCALER_OPTION_UPSAMPLE_USE_LANCZOS_TYPE", "2"),
+        ],
+    ),
+    (
+        "ffx_frameinterpolation_",
+        &[
+            (
+                "FFX_FRAMEINTERPOLATION_OPTION_UPSAMPLE_SAMPLERS_USE_DATA_HALF",
+                "0",
+            ),
+            (
+                "FFX_FRAMEINTERPOLATION_OPTION_ACCUMULATE_SAMPLERS_USE_DATA_HALF",
+                "0",
+            ),
+            (
+                "FFX_FRAMEINTERPOLATION_OPTION_REPROJECT_SAMPLERS_USE_DATA_HALF",
+                "1",
+            ),
+            (
+                "FFX_FRAMEINTERPOLATION_OPTION_POSTPROCESSLOCKSTATUS_SAMPLERS_USE_DATA_HALF",
+                "0",
+            ),
+            (
+                "FFX_FRAMEINTERPOLATION_OPTION_UPSAMPLE_USE_LANCZOS_TYPE",
+                "2",
+            ),
+        ],
+    ),
+];
 
 /// WGSL binding offsets of the HLSL register classes: the pass modules declare
 /// `tN`, `uN`, `bN` and `sN` at `N`, `64 + N`, `128 + N` and `192 + N` of
@@ -475,6 +591,9 @@ impl Preprocessor {
                     self.defines.insert(name.to_owned(), value.to_owned());
                 }
                 "include" => self.include(rest.trim_matches('"')),
+                "undef" => {
+                    self.defines.remove(rest);
+                }
                 _ => panic!("unsupported directive #{name} in {path}"),
             }
         }

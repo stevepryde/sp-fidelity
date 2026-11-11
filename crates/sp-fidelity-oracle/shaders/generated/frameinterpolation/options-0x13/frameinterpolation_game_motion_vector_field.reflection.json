@@ -1,0 +1,100 @@
+{
+  "metalEntryPoint": "main0",
+  "workgroupSize": [
+    8,
+    8,
+    1
+  ],
+  "resources": [
+    {
+      "name": "r_previous_interpolation_source",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 2,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_current_interpolation_source",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 3,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_dilated_motion_vectors",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 2,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_dilated_depth",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 3,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_input_distortion_field",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 4,
+      "arrayIndex": 0,
+      "mslIndex": 4,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "s_LinearClamp",
+      "kind": "sampler",
+      "registerClass": "s",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "sampler",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_game_motion_vector_field_x",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 5,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_game_motion_vector_field_y",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 6,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "cbFI",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "buffer",
+      "byteSize": 176
+    }
+  ]
+}

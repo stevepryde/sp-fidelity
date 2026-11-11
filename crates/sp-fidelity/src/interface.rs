@@ -10,7 +10,7 @@
 //! the way C copies the table between contexts: through [`FfxInterfaceRef`].
 //!
 //! Not ported, because no ported component calls them: `fpRegisterStaticResource`,
-//! `fpMapResource`, `fpUnmapResource`, the SDK 1.1 breadcrumbs, frame-generation swap-chain and constant-buffer-allocator
+//! `fpMapResource`, `fpUnmapResource`, the SDK 1.1 breadcrumbs and constant-buffer-allocator
 //! callbacks, and the `scratchBuffer`/`scratchBufferSize` backend memory (a
 //! Rust backend owns its state).
 use super::error::FfxErrorCode;
@@ -34,8 +34,41 @@ pub type FfxPass = u32;
 /// into each effect context description.
 pub type FfxInterfaceRef = Rc<RefCell<dyn FfxInterface>>;
 
+/// `FfxPresentCallbackFunc`; a closure owns the SDK's callback context.
+pub type FfxPresentCallbackFunc =
+    Rc<dyn Fn(&FfxPresentCallbackDescription) -> Result<(), FfxErrorCode>>;
+/// `FfxFrameGenerationDispatchFunc`; a closure owns the SDK's callback context.
+pub type FfxFrameGenerationDispatchFunc =
+    Rc<dyn Fn(&FfxFrameGenerationDispatchDescription) -> Result<(), FfxErrorCode>>;
+
+/// `FfxFrameGenerationConfig`. Callback context pointers become closure captures.
+#[derive(Clone, Default)]
+pub struct FfxFrameGenerationConfig {
+    pub swap_chain: FfxSwapchain,
+    pub present_callback: Option<FfxPresentCallbackFunc>,
+    pub frame_generation_callback: Option<FfxFrameGenerationDispatchFunc>,
+    pub frame_generation_enabled: bool,
+    pub allow_async_workloads: bool,
+    pub allow_async_present: bool,
+    pub hudless_color: FfxResource,
+    pub flags: u32,
+    pub only_present_interpolated: bool,
+    pub interpolation_rect: FfxRect2D,
+    pub frame_id: u64,
+    pub draw_debug_pacing_lines: bool,
+}
+
 /// `FfxInterface`: the backend function table.
 pub trait FfxInterface {
+    /// `fpSwapChainConfigureFrameGeneration`. Compute-only backends need not
+    /// implement presentation; the SDK's unsupported operation is returned.
+    fn swap_chain_configure_frame_generation(
+        &mut self,
+        _config: &FfxFrameGenerationConfig,
+    ) -> Result<(), FfxErrorCode> {
+        Err(super::error::FFX_ERROR_BACKEND_API_ERROR)
+    }
+
     /// `device`.
     fn device(&self) -> FfxDevice;
 

@@ -1,0 +1,30 @@
+{
+  "metalEntryPoint": "main0",
+  "workgroupSize": [
+    16,
+    4,
+    1
+  ],
+  "resources": [
+    {
+      "name": "r_optical_flow_previous",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_optical_flow",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "texture",
+      "byteSize": 0
+    }
+  ]
+}

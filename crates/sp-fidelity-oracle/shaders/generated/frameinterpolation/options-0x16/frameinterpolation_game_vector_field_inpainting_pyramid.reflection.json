@@ -1,0 +1,180 @@
+{
+  "metalEntryPoint": "main0",
+  "workgroupSize": [
+    256,
+    1,
+    1
+  ],
+  "resources": [
+    {
+      "name": "r_game_motion_vector_field_x",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_game_motion_vector_field_y",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_inpainting_pyramid0",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 2,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_inpainting_pyramid1",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 2,
+      "arrayIndex": 0,
+      "mslIndex": 3,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_inpainting_pyramid2",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 3,
+      "arrayIndex": 0,
+      "mslIndex": 4,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_inpainting_pyramid3",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 4,
+      "arrayIndex": 0,
+      "mslIndex": 5,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_inpainting_pyramid4",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 5,
+      "arrayIndex": 0,
+      "mslIndex": 6,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_inpainting_pyramid5",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 6,
+      "arrayIndex": 0,
+      "mslIndex": 7,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_inpainting_pyramid6",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 7,
+      "arrayIndex": 0,
+      "mslIndex": 8,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_inpainting_pyramid7",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 8,
+      "arrayIndex": 0,
+      "mslIndex": 9,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_inpainting_pyramid8",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 9,
+      "arrayIndex": 0,
+      "mslIndex": 10,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_inpainting_pyramid9",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 10,
+      "arrayIndex": 0,
+      "mslIndex": 11,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_inpainting_pyramid10",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 11,
+      "arrayIndex": 0,
+      "mslIndex": 12,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_inpainting_pyramid11",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 12,
+      "arrayIndex": 0,
+      "mslIndex": 13,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_counters",
+      "kind": "buffer",
+      "registerClass": "u",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 2,
+      "mslKind": "buffer",
+      "byteSize": 0
+    },
+    {
+      "name": "cbFI",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "buffer",
+      "byteSize": 176
+    },
+    {
+      "name": "cbInpaintingPyramid",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "buffer",
+      "byteSize": 16
+    }
+  ]
+}

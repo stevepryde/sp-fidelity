@@ -132,9 +132,9 @@ pub fn write_inputs(directory: &Path, inputs: &[Input], updates: &[Vec<(&str, Ve
     .unwrap();
 }
 
-/// Readbacks and their dump paths; `true` narrows `Rgba32Float` texels to
-/// the SDK's `R32G32_FLOAT` (the backend allocates such UAVs as RGBA).
-type Pending = Rc<RefCell<Vec<(PathBuf, Readback, bool)>>>;
+/// Readbacks and their dump paths; an optional physical texel size narrows
+/// widened RGBA texels back to the SDK's original RG half or float layout.
+type Pending = Rc<RefCell<Vec<(PathBuf, Readback, Option<usize>)>>>;
 
 /// Prepares a job before its capture, e.g. writes its inputs.
 pub type Prepare = Box<dyn FnMut(&mut FfxWgpuJobObservation<'_>)>;
@@ -195,10 +195,10 @@ impl Capture {
             .unzip();
         for ((path, narrow), bytes) in targets.iter().zip(Readback::read_all(device, readbacks)) {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let bytes: Vec<u8> = if *narrow {
+            let bytes: Vec<u8> = if let Some(size) = *narrow {
                 bytes
-                    .chunks_exact(16)
-                    .flat_map(|t| &t[..8])
+                    .chunks_exact(size)
+                    .flat_map(|t| &t[..size / 2])
                     .copied()
                     .collect()
             } else {
@@ -268,8 +268,11 @@ fn observe(
                 } else {
                     texture.mip_level_count()
                 };
-                let narrow = resource.description.format == FfxSurfaceFormat::R32G32Float
-                    && texture.format() == wgpu::TextureFormat::Rgba32Float;
+                let narrow = match (resource.description.format, texture.format()) {
+                    (FfxSurfaceFormat::R32G32Float, wgpu::TextureFormat::Rgba32Float) => Some(16),
+                    (FfxSurfaceFormat::R16G16Float, wgpu::TextureFormat::Rgba16Float) => Some(8),
+                    _ => None,
+                };
                 for mip in 0..mips {
                     pending.push((
                         stage_directory.join(format!("{}.mip-{mip}.bin", resource.name)),
@@ -285,13 +288,13 @@ fn observe(
                 pending.push((
                     stage_directory.join(format!("{}.mip-0.bin", resource.name)),
                     Readback::buffer(observation.device, observation.encoder, buffer),
-                    false,
+                    None,
                 ));
             }
             FfxWgpuObject::Buffer(buffer) => pending.push((
                 stage_directory.join(format!("{}.bin", resource.name)),
                 Readback::buffer(observation.device, observation.encoder, buffer),
-                false,
+                None,
             )),
         }
     }

@@ -41,6 +41,8 @@ use std::num::NonZeroU32;
 use std::rc::Rc;
 use wgpu::util::DeviceExt;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod atomic_tests;
 mod dispatch_grid;
 pub mod readback;
 
@@ -117,6 +119,11 @@ pub struct FfxWgpuJobObservation<'a> {
 /// fidelity tests. It may record into the encoder.
 pub type FfxWgpuJobObserver = Box<dyn FnMut(&mut FfxWgpuJobObservation<'_>)>;
 
+/// Application presentation adapter for the SDK frame-generation configuration.
+/// The application owns its surface, presentation timing, and callback scheduling.
+pub type FfxWgpuFrameGenerationConfigurator =
+    Box<dyn FnMut(&sp_fidelity::interface::FfxFrameGenerationConfig) -> Result<(), FfxErrorCode>>;
+
 #[derive(Clone, Debug, PartialEq)]
 enum Object {
     Texture(wgpu::Texture),
@@ -152,6 +159,18 @@ struct Handle {
     name: String,
 }
 
+struct TextureBuffer {
+    texture: wgpu::Texture,
+    buffer: wgpu::Buffer,
+    to_buffer: wgpu::BindGroup,
+    to_texture: Option<wgpu::BindGroup>,
+}
+
+struct TextureBufferPipelines {
+    to_buffer: wgpu::ComputePipeline,
+    to_texture: wgpu::ComputePipeline,
+}
+
 struct Resource {
     handle: Handle,
     state: FfxResourceStates,
@@ -169,6 +188,7 @@ struct Pipeline {
     effect: FfxEffect,
     pass: FfxPass,
     pipeline: wgpu::ComputePipeline,
+    output_source: Option<String>,
     layout: wgpu::BindGroupLayout,
     /// Layout entries by WGSL binding.
     entries: HashMap<u32, wgpu::BindGroupLayoutEntry>,
@@ -209,8 +229,8 @@ struct StagedConstants {
     size: u64,
 }
 
-#[derive(Default)]
 struct EffectContext {
+    effect: FfxEffect,
     dynamic: Vec<usize>,
 }
 
@@ -233,11 +253,15 @@ pub struct FfxWgpuBackend {
     command_lists: Vec<Option<wgpu::CommandEncoder>>,
     grid: dispatch_grid::DispatchGrid,
     clears: HashMap<wgpu::TextureFormat, wgpu::ComputePipeline>,
+    texture_buffers: Vec<TextureBuffer>,
+    output_variants: HashMap<(usize, wgpu::TextureFormat), usize>,
+    texture_buffer_pipelines: HashMap<wgpu::TextureFormat, TextureBufferPipelines>,
     observer: Option<FfxWgpuJobObserver>,
     pass_timestamps: Option<FfxWgpuPassTimestamps>,
     /// The first job that stopped `execute_gpu_jobs` since
     /// `take_job_error`, whose result the SDK's dispatch ignores.
     job_error: Option<FfxWgpuJobError>,
+    frame_generation_configurator: Option<FfxWgpuFrameGenerationConfigurator>,
 }
 
 /// Timestamp query pairs for the compute passes `execute_gpu_jobs` begins, in
@@ -372,9 +396,13 @@ impl FfxWgpuBackend {
             command_lists: Vec::new(),
             grid: dispatch_grid::DispatchGrid::new(device),
             clears: HashMap::new(),
+            texture_buffers: Vec::new(),
+            output_variants: HashMap::new(),
+            texture_buffer_pipelines: HashMap::new(),
             observer: None,
             pass_timestamps: None,
             job_error: None,
+            frame_generation_configurator: None,
         }
     }
 
@@ -406,9 +434,18 @@ impl FfxWgpuBackend {
         for handle in self.external_handles.drain(..) {
             self.handles.remove(&handle);
         }
+        self.prune_texture_buffers();
         self.command_lists
             .get_mut(command_list.checked_sub(1)?)
             .and_then(Option::take)
+    }
+
+    fn prune_texture_buffers(&mut self) {
+        self.texture_buffers.retain(|backing| {
+            self.handles
+                .values()
+                .any(|handle| handle.object == Object::Texture(backing.texture.clone()))
+        });
     }
 
     /// `ffxGetResourceDX12`: an `FfxResource` for a caller texture, described
@@ -452,6 +489,17 @@ impl FfxWgpuBackend {
     /// Observe every job that `execute_gpu_jobs` records, or stop with `None`.
     pub fn set_job_observer(&mut self, observer: Option<FfxWgpuJobObserver>) {
         self.observer = observer;
+    }
+
+    /// Connect `fpSwapChainConfigureFrameGeneration` to the application's
+    /// presentation scheduler. wgpu surfaces do not expose the SDK's DXGI or
+    /// Vulkan proxy-swapchain interface. Without an adapter configuration
+    /// returns `FFX_ERROR_BACKEND_API_ERROR`.
+    pub fn set_frame_generation_configurator(
+        &mut self,
+        configurator: Option<FfxWgpuFrameGenerationConfigurator>,
+    ) {
+        self.frame_generation_configurator = configurator;
     }
 
     /// Time the compute passes that later dispatches record, or stop with
@@ -523,6 +571,13 @@ impl FfxWgpuBackend {
             return Ok(pipeline.clone());
         }
         let storage = storage_format_name(format).ok_or(FFX_ERROR_INVALID_ARGUMENT)?;
+        let value = match format {
+            wgpu::TextureFormat::R32Uint | wgpu::TextureFormat::R8Uint => {
+                "bitcast<vec4<u32>>(color)"
+            }
+            wgpu::TextureFormat::Rg16Sint => "bitcast<vec4<i32>>(color)",
+            _ => "color",
+        };
         let module = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -533,7 +588,7 @@ impl FfxWgpuBackend {
 @group(0) @binding(1) var<uniform> color: vec4<f32>;
 @compute @workgroup_size(8, 8) fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
     let size = textureDimensions(cleared);
-    if (id.x < size.x && id.y < size.y) {{ textureStore(cleared, id.xy, color); }}
+    if (id.x < size.x && id.y < size.y) {{ textureStore(cleared, id.xy, {value}); }}
 }}"
                     )
                     .into(),
@@ -571,6 +626,15 @@ impl FfxWgpuBackend {
             return Ok(());
         }
         let texture = self.texture(clear.target)?.clone();
+        // Only zero is used for narrow integer formats by the SDK; their
+        // nonzero ClearFloat conversion is not part of this backend contract.
+        if matches!(
+            texture.format(),
+            wgpu::TextureFormat::R8Uint | wgpu::TextureFormat::Rg16Sint
+        ) && clear.color != [0.0; 4]
+        {
+            return Err(FFX_ERROR_INVALID_ARGUMENT.into());
+        }
         let pipeline = self.clear_pipeline(texture.format())?;
         let scopes = CreationScopes::push(&self.device);
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
@@ -685,9 +749,9 @@ impl FfxWgpuBackend {
             });
         };
         for (binding, srv) in state.srv_texture_bindings.iter().zip(&job.srv_textures) {
-            let texture = Object::Texture(self.texture(srv.resource)?.clone());
             let wgsl = FFX_WGSL_BINDING_OFFSET_SRV + binding.slot_index;
-            bind(wgsl, binding.array_index, texture, None, 0, None);
+            let object = self.texture_binding_object(pipeline, wgsl, srv.resource)?;
+            bind(wgsl, binding.array_index, object, None, 0, None);
         }
         for (binding, uav) in state.uav_texture_bindings.iter().zip(&job.uav_textures) {
             let wgsl = FFX_WGSL_BINDING_OFFSET_UAV + binding.slot_index;
@@ -695,13 +759,24 @@ impl FfxWgpuBackend {
                 .entries
                 .get(&wgsl)
                 .ok_or(FFX_ERROR_INVALID_ARGUMENT)?;
-            let object = self.resource(uav.resource)?.handle.object.clone();
-            // A texture the pipeline binds as a buffer was converted by
-            // `back_buffer_bindings` before the job.
+            let object = self.texture_binding_object(pipeline, wgsl, uav.resource)?;
+            // Buffer bindings were prepared by `back_buffer_bindings`.
             let as_buffer = matches!(entry.ty, wgpu::BindingType::Buffer { .. });
             let mip = match (&object, as_buffer) {
                 (Object::Buffer(_), true) => None,
-                (Object::Texture(_), false) => Some(object.uav_mip(uav.mip)),
+                (Object::Texture(_), false) => {
+                    use sp_fidelity::frameinterpolation::FfxFrameInterpolationPass as Pass;
+                    // FI declares all twelve SPD mip UAVs. Preserve the requested
+                    // mip here so absent, unused mips get distinct inert views.
+                    let fi_spd = pipeline.effect == FfxEffect::FrameInterpolation
+                        && (pipeline.pass == Pass::InpaintingPyramid as u32
+                            || pipeline.pass == Pass::GameVectorFieldInpaintingPyramid as u32);
+                    Some(if fi_spd {
+                        uav.mip
+                    } else {
+                        object.uav_mip(uav.mip)
+                    })
+                }
                 _ => return Err(FFX_ERROR_INVALID_ARGUMENT),
             };
             bind(wgsl, binding.array_index, object, mip, 0, None);
@@ -763,7 +838,27 @@ impl FfxWgpuBackend {
                 }
                 Object::Texture(texture) => texture,
             };
-            let view = if let Some(mip) = b.mip {
+            let view = if b.mip.is_some_and(|mip| mip >= texture.mip_level_count()) {
+                // SPD guards every absent mip by its dispatched mip count
+                // (ffx_spd.h:496-511,538). Aliasing these unused views to the
+                // last real mip mixes read/write usages forbidden by wgpu.
+                self.device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("FidelityFX unused SPD mip"),
+                        size: wgpu::Extent3d {
+                            width: 1,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: texture.format(),
+                        usage: wgpu::TextureUsages::STORAGE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&wgpu::TextureViewDescriptor::default())
+            } else if let Some(mip) = b.mip {
                 texture.create_view(&wgpu::TextureViewDescriptor {
                     dimension: Some(wgpu::TextureViewDimension::D2),
                     base_mip_level: mip,
@@ -904,7 +999,16 @@ impl FfxWgpuBackend {
         upload: Option<&wgpu::Buffer>,
         constants: &[StagedConstants],
     ) -> Result<(), JobFailure> {
-        let pipeline = self.pipeline(&job.pipeline)?;
+        let output = self.output_format(job)?;
+        let pipeline = if let Some(format) = output
+            && let Some(index) = self.output_variants.get(&(job.pipeline.pipeline, format))
+        {
+            self.pipelines[*index]
+                .as_ref()
+                .ok_or(FFX_ERROR_INVALID_ARGUMENT)?
+        } else {
+            self.pipeline(&job.pipeline)?
+        };
         let state = &job.pipeline;
         let bindings = self.job_bindings(pipeline, job)?;
         let group = {
@@ -963,78 +1067,382 @@ impl FfxWgpuBackend {
         Ok(())
     }
 
-    /// Back each texture that `job`'s pipeline binds as a storage buffer
-    /// with a buffer of its texels, from the first such job on.
-    ///
-    /// FSR2 creates `FSR2_SpdAtomicCounter` as a 1x1 `R32_UINT` UAV texture
-    /// (`ffx_fsr2.cpp:702-711`), whose `InterlockedAdd` returns the previous
-    /// value (`ffx_fsr2_callbacks_hlsl.h:949`); WGSL texture atomics return
-    /// nothing, so the port binds it as a storage buffer. The texture's
-    /// contents so far (its initial data, clears) are copied into the buffer,
-    /// which then replaces it. Only a single-row texture the effect created
-    /// can be converted: its texels are the buffer's layout.
-    fn back_buffer_bindings(
-        &mut self,
-        encoder: &mut wgpu::CommandEncoder,
+    fn output_format(
+        &self,
         job: &FfxComputeJobDescription,
-    ) -> Result<(), FfxErrorCode> {
-        let pipeline = self.pipeline(&job.pipeline)?;
-        let resources: Vec<FfxResourceInternal> = job
+    ) -> Result<Option<wgpu::TextureFormat>, FfxErrorCode> {
+        if self.pipeline(&job.pipeline)?.output_source.is_none() {
+            return Ok(None);
+        }
+        let resource = job
             .pipeline
             .uav_texture_bindings
             .iter()
             .zip(&job.uav_textures)
-            .filter(|(binding, _)| {
-                pipeline
-                    .entries
-                    .get(&(FFX_WGSL_BINDING_OFFSET_UAV + binding.slot_index))
-                    .is_some_and(|e| matches!(e.ty, wgpu::BindingType::Buffer { .. }))
+            .find(|(binding, _)| binding.name == "rw_output")
+            .ok_or(FFX_ERROR_INVALID_ARGUMENT)?
+            .1
+            .resource;
+        Ok(Some(self.texture(resource)?.format()))
+    }
+
+    fn prepare_output_pipeline(
+        &mut self,
+        job: &FfxComputeJobDescription,
+    ) -> Result<(), JobFailure> {
+        let Some(format) = self.output_format(job)? else {
+            return Ok(());
+        };
+        if format == wgpu::TextureFormat::Rgba16Float
+            || self
+                .output_variants
+                .contains_key(&(job.pipeline.pipeline, format))
+        {
+            return Ok(());
+        }
+        let original = self.pipeline(&job.pipeline)?;
+        let storage = storage_format_name(format).ok_or(FFX_ERROR_INVALID_ARGUMENT)?;
+        let source = original.output_source.as_ref().unwrap().replace(
+            "var rw_output: texture_storage_2d<rgba16float,",
+            &format!("var rw_output: texture_storage_2d<{storage},"),
+        );
+        let reflection = Reflection::new(&source)?;
+        let entries = original
+            .entries
+            .iter()
+            .map(|(binding, entry)| {
+                let mut entry = *entry;
+                entry.ty = reflection.binding(*binding)?.0;
+                Ok((*binding, entry))
             })
-            .map(|(_, uav)| uav.resource)
-            .collect();
-        for resource in resources {
-            let device = self.device.clone();
-            let r = usize::try_from(resource.internal_index)
-                .ok()
-                .and_then(|index| self.resources.get_mut(index))
-                .and_then(Option::as_mut)
-                .ok_or(FFX_ERROR_INVALID_ARGUMENT)?;
+            .collect::<Result<HashMap<_, _>, FfxErrorCode>>()?;
+        let mut layout_entries: Vec<_> = entries.values().copied().collect();
+        layout_entries.sort_by_key(|entry| entry.binding);
+        let scopes = CreationScopes::push(&self.device);
+        let layout = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some(&job.pipeline.name),
+                entries: &layout_entries,
+            });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some(&job.pipeline.name),
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(&job.pipeline.name),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(&job.pipeline.name),
+                layout: Some(&pipeline_layout),
+                module: &module,
+                entry_point: Some(FFX_WGSL_ENTRY_POINT),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        scopes.check()?;
+        let variant = Pipeline {
+            effect: original.effect,
+            pass: original.pass,
+            pipeline,
+            layout,
+            entries,
+            output_source: None,
+            constant_sizes: original.constant_sizes.clone(),
+            constants: original.constants.clone(),
+            samplers: original.samplers.clone(),
+            grid_group: None,
+            groups: RefCell::new(Vec::new()),
+        };
+        let index = self.pipelines.len();
+        self.pipelines.push(Some(variant));
+        self.output_variants
+            .insert((job.pipeline.pipeline, format), index);
+        Ok(())
+    }
+
+    fn texture_binding_object(
+        &self,
+        pipeline: &Pipeline,
+        binding: u32,
+        resource: FfxResourceInternal,
+    ) -> Result<Object, FfxErrorCode> {
+        let object = &self.resource(resource)?.handle.object;
+        if pipeline
+            .entries
+            .get(&binding)
+            .is_some_and(|entry| matches!(entry.ty, wgpu::BindingType::Buffer { .. }))
+            && let Object::Texture(texture) = object
+        {
+            return self
+                .texture_buffers
+                .iter()
+                .find(|backing| &backing.texture == texture)
+                .map(|backing| Object::Buffer(backing.buffer.clone()))
+                .ok_or(FFX_ERROR_INVALID_ARGUMENT);
+        }
+        Ok(object.clone())
+    }
+
+    fn buffer_texture_resources(
+        &self,
+        job: &FfxComputeJobDescription,
+        writable_only: bool,
+    ) -> Result<Vec<FfxResourceInternal>, FfxErrorCode> {
+        let pipeline = self.pipeline(&job.pipeline)?;
+        let mut resources = Vec::new();
+        for (offset, bindings) in [
+            (
+                FFX_WGSL_BINDING_OFFSET_SRV,
+                job.pipeline
+                    .srv_texture_bindings
+                    .iter()
+                    .zip(&job.srv_textures)
+                    .map(|(binding, resource)| (binding, resource.resource))
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                FFX_WGSL_BINDING_OFFSET_UAV,
+                job.pipeline
+                    .uav_texture_bindings
+                    .iter()
+                    .zip(&job.uav_textures)
+                    .map(|(binding, resource)| (binding, resource.resource))
+                    .collect(),
+            ),
+        ] {
+            if writable_only && offset == FFX_WGSL_BINDING_OFFSET_SRV {
+                continue;
+            }
+            for (binding, resource) in bindings {
+                if pipeline
+                    .entries
+                    .get(&(offset + binding.slot_index))
+                    .is_some_and(|entry| matches!(entry.ty, wgpu::BindingType::Buffer { .. }))
+                    && !resources.contains(&resource)
+                {
+                    resources.push(resource);
+                }
+            }
+        }
+        Ok(resources)
+    }
+
+    fn create_texture_buffer(&mut self, texture: &wgpu::Texture) -> Result<(), JobFailure> {
+        if !matches!(
+            texture.format(),
+            wgpu::TextureFormat::R32Uint | wgpu::TextureFormat::Rg16Sint
+        ) || texture.mip_level_count() != 1
+            || texture.depth_or_array_layers() != 1
+        {
+            return Err(FFX_ERROR_INVALID_ARGUMENT.into());
+        }
+        if self
+            .texture_buffers
+            .iter()
+            .any(|backing| &backing.texture == texture)
+        {
+            return Ok(());
+        }
+        let scopes = CreationScopes::push(&self.device);
+        let format = texture.format();
+        let pipelines = self.texture_buffer_pipelines.entry(format).or_insert_with(|| {
+            let make = |to_buffer| {
+                let (image, assignment) = match (format, to_buffer) {
+                    (wgpu::TextureFormat::R32Uint, true) => (
+                        "texture_2d<u32>",
+                        "texels[id.y * size.x + id.x] = textureLoad(image, id.xy, 0).x;",
+                    ),
+                    (wgpu::TextureFormat::R32Uint, false) => (
+                        "texture_storage_2d<r32uint, write>",
+                        "textureStore(image, id.xy, vec4<u32>(texels[id.y * size.x + id.x]));",
+                    ),
+                    (wgpu::TextureFormat::Rg16Sint, true) => (
+                        "texture_2d<i32>",
+                        "let value = bitcast<vec2<u32>>(textureLoad(image, id.xy, 0).xy); texels[id.y * size.x + id.x] = (value.x & 0xffffu) | (value.y << 16u);",
+                    ),
+                    (wgpu::TextureFormat::Rg16Sint, false) => (
+                        "texture_storage_2d<rg16sint, write>",
+                        "let value = texels[id.y * size.x + id.x]; textureStore(image, id.xy, vec4<i32>(bitcast<i32>(value << 16u) >> 16, bitcast<i32>(value) >> 16, 0, 0));",
+                    ),
+                    _ => unreachable!(),
+                };
+                let access = if to_buffer { "read_write" } else { "read" };
+                let declarations = format!("@group(0) @binding(0) var image: {image};
+@group(0) @binding(1) var<storage, {access}> texels: array<u32>;");
+                let module = self.device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some("FidelityFX packed integer texture transfer"),
+                    source: wgpu::ShaderSource::Wgsl(format!("{declarations}
+@compute @workgroup_size(8, 8) fn main(@builtin(global_invocation_id) id: vec3<u32>) {{
+    let size = textureDimensions(image);
+    if (id.x < size.x && id.y < size.y) {{ {assignment} }}
+}}" ).into()),
+                });
+                self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("FidelityFX packed integer texture transfer"),
+                    layout: None,
+                    module: &module,
+                    entry_point: Some("main"),
+                    compilation_options: Default::default(),
+                    cache: None,
+                })
+            };
+            TextureBufferPipelines { to_buffer: make(true), to_texture: make(false) }
+        });
+        let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("FidelityFX packed integer texels"),
+            size: u64::from(texture.width()) * u64::from(texture.height()) * 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let view = texture.create_view(&Default::default());
+        let group = |pipeline: &wgpu::ComputePipeline| {
+            self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("FidelityFX packed integer texture transfer"),
+                layout: &pipeline.get_bind_group_layout(0),
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: buffer.as_entire_binding(),
+                    },
+                ],
+            })
+        };
+        let backing = TextureBuffer {
+            texture: texture.clone(),
+            to_buffer: group(&pipelines.to_buffer),
+            to_texture: texture
+                .usage()
+                .contains(wgpu::TextureUsages::STORAGE_BINDING)
+                .then(|| group(&pipelines.to_texture)),
+            buffer,
+        };
+        scopes.check()?;
+        self.texture_buffers.push(backing);
+        Ok(())
+    }
+
+    /// WGSL cannot return a texture atomic's previous value. SPD's private
+    /// single-row counter remains permanently backed by a buffer. Shared and
+    /// two-dimensional integer textures retain their handles and synchronize
+    /// packed texels around each buffer-backed pass, including SRV reads.
+    /// Rg16Sint uses one word with signed X in low16 and signed Y in high16;
+    /// Metal cannot read and write that texture format in one pass.
+    fn back_buffer_bindings(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        job: &FfxComputeJobDescription,
+    ) -> Result<(), JobFailure> {
+        let effect = self.pipeline(&job.pipeline)?.effect;
+        for resource in self.buffer_texture_resources(job, false)? {
+            let r = self.resource(resource)?;
             let Object::Texture(texture) = &r.handle.object else {
                 continue;
             };
-            if r.dynamic
-                || texture.height() != 1
-                || texture.mip_level_count() != 1
-                || texture.depth_or_array_layers() != 1
+            let texture = texture.clone();
+            if matches!(effect, FfxEffect::Fsr2 | FfxEffect::Fsr3Upscaler)
+                && !r.dynamic
+                && texture.height() == 1
             {
-                return Err(FFX_ERROR_INVALID_ARGUMENT);
+                if texture.mip_level_count() != 1 || texture.depth_or_array_layers() != 1 {
+                    return Err(FFX_ERROR_INVALID_ARGUMENT.into());
+                }
+                let block = texture
+                    .format()
+                    .block_copy_size(None)
+                    .ok_or(FFX_ERROR_INVALID_ARGUMENT)?;
+                let size = u64::from(texture.width() * block).next_multiple_of(4);
+                let buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&r.handle.name),
+                    size,
+                    usage: wgpu::BufferUsages::STORAGE
+                        | wgpu::BufferUsages::COPY_SRC
+                        | wgpu::BufferUsages::COPY_DST,
+                    mapped_at_creation: false,
+                });
+                encoder.copy_texture_to_buffer(
+                    texture.as_image_copy(),
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &buffer,
+                        layout: Default::default(),
+                    },
+                    texture.size(),
+                );
+                let r = self.resources[resource.internal_index as usize]
+                    .as_mut()
+                    .unwrap();
+                r.handle.object = Object::Buffer(buffer);
+                r.bytes = size;
+                if let Some(handle) = self.handles.get_mut(&r.handle_id) {
+                    handle.object = r.handle.object.clone();
+                }
+            } else {
+                self.create_texture_buffer(&texture)?;
+                self.sync_texture_buffer(encoder, &texture, true)?;
             }
-            let block = texture
-                .format()
-                .block_copy_size(None)
-                .ok_or(FFX_ERROR_INVALID_ARGUMENT)?;
-            let size = u64::from(texture.width() * block).next_multiple_of(4);
-            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some(&r.handle.name),
-                size,
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_SRC
-                    | wgpu::BufferUsages::COPY_DST,
-                mapped_at_creation: false,
-            });
-            encoder.copy_texture_to_buffer(
-                texture.as_image_copy(),
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &buffer,
-                    layout: wgpu::TexelCopyBufferLayout::default(),
-                },
-                texture.size(),
-            );
-            r.handle.object = Object::Buffer(buffer);
-            r.bytes = size;
-            let (handle_id, object) = (r.handle_id, r.handle.object.clone());
-            if let Some(handle) = self.handles.get_mut(&handle_id) {
-                handle.object = object;
+        }
+        Ok(())
+    }
+
+    fn sync_texture_buffer(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        texture: &wgpu::Texture,
+        to_buffer: bool,
+    ) -> Result<(), FfxErrorCode> {
+        let backing = self
+            .texture_buffers
+            .iter()
+            .find(|backing| &backing.texture == texture)
+            .unwrap();
+        let pipelines = self
+            .texture_buffer_pipelines
+            .get(&texture.format())
+            .unwrap();
+        let group = if to_buffer {
+            &backing.to_buffer
+        } else {
+            backing
+                .to_texture
+                .as_ref()
+                .ok_or(FFX_ERROR_INVALID_ARGUMENT)?
+        };
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("FidelityFX packed integer texture transfer"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(if to_buffer {
+            &pipelines.to_buffer
+        } else {
+            &pipelines.to_texture
+        });
+        pass.set_bind_group(0, group, &[]);
+        pass.dispatch_workgroups(texture.width().div_ceil(8), texture.height().div_ceil(8), 1);
+        Ok(())
+    }
+
+    fn restore_buffer_bindings(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        job: &FfxComputeJobDescription,
+    ) -> Result<(), FfxErrorCode> {
+        for resource in self.buffer_texture_resources(job, true)? {
+            if let Object::Texture(texture) = &self.resource(resource)?.handle.object {
+                self.sync_texture_buffer(encoder, texture, false)?;
             }
         }
         Ok(())
@@ -1045,40 +1453,81 @@ impl FfxWgpuBackend {
         job: &'a FfxGpuJobDescription,
     ) -> Vec<FfxWgpuObservedResource<'a>> {
         let mut out = Vec::new();
-        let mut add = |binding: &'a str, resource: FfxResourceInternal, mip: u32, writable| {
-            if let Ok(r) = self.resource(resource) {
-                out.push(FfxWgpuObservedResource {
-                    binding,
-                    name: &r.handle.name,
-                    description: r.handle.description,
-                    object: r.handle.object.observed(),
-                    mip: r.handle.object.uav_mip(mip),
-                    writable,
-                });
-            }
-        };
+        let mut add =
+            |binding: &'a str, resource: FfxResourceInternal, mip: u32, writable, wgsl| {
+                if let Ok(r) = self.resource(resource) {
+                    out.push(FfxWgpuObservedResource {
+                        binding,
+                        name: &r.handle.name,
+                        description: r.handle.description,
+                        object: if let Some(wgsl) = wgsl
+                            && let FfxGpuJobDescriptor::Compute(compute) = &job.descriptor
+                            && let Ok(pipeline) = self.pipeline(&compute.pipeline)
+                            && pipeline.entries.get(&wgsl).is_some_and(|entry| {
+                                matches!(entry.ty, wgpu::BindingType::Buffer { .. })
+                            })
+                            && let Object::Texture(texture) = &r.handle.object
+                            && let Some(backing) = self
+                                .texture_buffers
+                                .iter()
+                                .find(|backing| &backing.texture == texture)
+                        {
+                            FfxWgpuObject::Buffer(&backing.buffer)
+                        } else {
+                            r.handle.object.observed()
+                        },
+                        mip: r.handle.object.uav_mip(mip),
+                        writable,
+                    });
+                }
+            };
         match &job.descriptor {
-            FfxGpuJobDescriptor::ClearFloat(clear) => add("target", clear.target, 0, true),
+            FfxGpuJobDescriptor::Discard(_) | FfxGpuJobDescriptor::Barrier(_) => {}
+            FfxGpuJobDescriptor::ClearFloat(clear) => add("target", clear.target, 0, true, None),
             FfxGpuJobDescriptor::Copy(copy) => {
-                add("src", copy.src, 0, false);
-                add("dst", copy.dst, 0, true);
+                add("src", copy.src, 0, false, None);
+                add("dst", copy.dst, 0, true, None);
             }
             FfxGpuJobDescriptor::Compute(compute) => {
                 let state = &compute.pipeline;
                 for (b, r) in state.srv_texture_bindings.iter().zip(&compute.srv_textures) {
-                    add(&b.name, r.resource, 0, false);
+                    add(
+                        &b.name,
+                        r.resource,
+                        0,
+                        false,
+                        Some(FFX_WGSL_BINDING_OFFSET_SRV + b.slot_index),
+                    );
                 }
                 for (b, r) in state.uav_texture_bindings.iter().zip(&compute.uav_textures) {
-                    add(&b.name, r.resource, r.mip, true);
+                    add(
+                        &b.name,
+                        r.resource,
+                        r.mip,
+                        true,
+                        Some(FFX_WGSL_BINDING_OFFSET_UAV + b.slot_index),
+                    );
                 }
                 for (b, r) in state.srv_buffer_bindings.iter().zip(&compute.srv_buffers) {
-                    add(&b.name, r.resource, 0, false);
+                    add(
+                        &b.name,
+                        r.resource,
+                        0,
+                        false,
+                        Some(FFX_WGSL_BINDING_OFFSET_SRV + b.slot_index),
+                    );
                 }
                 for (b, r) in state.uav_buffer_bindings.iter().zip(&compute.uav_buffers) {
-                    add(&b.name, r.resource, 0, true);
+                    add(
+                        &b.name,
+                        r.resource,
+                        0,
+                        true,
+                        Some(FFX_WGSL_BINDING_OFFSET_UAV + b.slot_index),
+                    );
                 }
                 if state.cmd_signature != 0 {
-                    add("cmdArgument", compute.cmd_argument, 0, false);
+                    add("cmdArgument", compute.cmd_argument, 0, false, None);
                 }
             }
         }
@@ -1114,6 +1563,15 @@ impl FfxWgpuBackend {
 }
 
 impl FfxInterface for FfxWgpuBackend {
+    fn swap_chain_configure_frame_generation(
+        &mut self,
+        config: &sp_fidelity::interface::FfxFrameGenerationConfig,
+    ) -> Result<(), FfxErrorCode> {
+        self.frame_generation_configurator
+            .as_mut()
+            .ok_or(FFX_ERROR_BACKEND_API_ERROR)?(config)
+    }
+
     fn device(&self) -> FfxDevice {
         1
     }
@@ -1144,14 +1602,20 @@ impl FfxInterface for FfxWgpuBackend {
 
     fn create_backend_context(
         &mut self,
-        _effect: FfxEffect,
+        effect: FfxEffect,
         _bindless_config: Option<&FfxEffectBindlessConfig>,
     ) -> Result<u32, FfxErrorCode> {
         let index = if let Some(index) = self.contexts.iter().position(Option::is_none) {
-            self.contexts[index] = Some(EffectContext::default());
+            self.contexts[index] = Some(EffectContext {
+                effect,
+                dynamic: Vec::new(),
+            });
             index
         } else {
-            self.contexts.push(Some(EffectContext::default()));
+            self.contexts.push(Some(EffectContext {
+                effect,
+                dynamic: Vec::new(),
+            }));
             self.contexts.len() - 1
         };
         u32::try_from(index).map_err(|_| FFX_ERROR_OUT_OF_RANGE)
@@ -1190,6 +1654,7 @@ impl FfxInterface for FfxWgpuBackend {
                 self.handles.remove(&resource.handle_id);
             }
         }
+        self.prune_texture_buffers();
         Ok(())
     }
 
@@ -1200,7 +1665,27 @@ impl FfxInterface for FfxWgpuBackend {
     ) -> Result<FfxResourceInternal, FfxErrorCode> {
         let d = create_resource_description;
         let description = d.resource_description;
-        let (object, bytes) = create_object(&self.device, d)?;
+        let effect = self
+            .contexts
+            .get(effect_context_id as usize)
+            .and_then(Option::as_ref)
+            .map(|context| context.effect);
+        let widen_spd = effect == Some(FfxEffect::Fsr3Upscaler)
+            && d.id == sp_fidelity::fsr3upscaler::resources::FFX_FSR3UPSCALER_RESOURCE_IDENTIFIER_SPD_MIPS;
+        let mut allocation = *d;
+        // Optical flow's optional 1D allocations still have Texture2D HLSL
+        // bindings (ffx_opticalflow_callbacks_hlsl.h:209,250-265). wgpu
+        // requires matching dimensions; retain the SDK description above.
+        if effect == Some(FfxEffect::OpticalFlow)
+            && description.r#type == FfxResourceType::Texture1D
+        {
+            allocation.resource_description.r#type = FfxResourceType::Texture2D;
+        }
+        let (object, bytes) = create_object(
+            &self.device,
+            &allocation,
+            widen_spd.then_some(wgpu::TextureFormat::Rgba16Float),
+        )?;
         let handle = Handle {
             object,
             description,
@@ -1240,6 +1725,12 @@ impl FfxInterface for FfxWgpuBackend {
                 {
                     data.chunks(8)
                         .flat_map(|texel| texel.iter().copied().chain([0; 8]))
+                        .collect()
+                } else if texture.format() == wgpu::TextureFormat::Rgba16Float
+                    && description.format == FfxSurfaceFormat::R16G16Float
+                {
+                    data.chunks(4)
+                        .flat_map(|texel| texel.iter().copied().chain([0; 4]))
                         .collect()
                 } else {
                     data
@@ -1391,6 +1882,7 @@ impl FfxInterface for FfxWgpuBackend {
         {
             self.handles.remove(&r.handle_id);
         }
+        self.prune_texture_buffers();
         Ok(())
     }
 
@@ -1424,6 +1916,14 @@ impl FfxInterface for FfxWgpuBackend {
             return Err(FFX_ERROR_BACKEND_API_ERROR);
         }
         let source = ffx_get_wgsl_source(&blob).ok_or(FFX_ERROR_BACKEND_API_ERROR)?;
+        let source = if effect == FfxEffect::Fsr3Upscaler {
+            source.replace(
+                "texture_storage_2d<rg16float, read_write>",
+                "texture_storage_2d<rgba16float, read_write>",
+            )
+        } else {
+            source
+        };
         let reflection = Reflection::new(&source)?;
 
         let tables: [(&[FfxShaderBlobBinding], u32); 6] = [
@@ -1478,6 +1978,9 @@ impl FfxInterface for FfxWgpuBackend {
                 bind_group_layouts: &groups,
                 immediate_size: 0,
             });
+        let output_source = (effect == FfxEffect::FrameInterpolation
+            && source.contains("var rw_output:"))
+        .then(|| source.clone());
         let module = self
             .device
             .create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -1547,6 +2050,7 @@ impl FfxInterface for FfxWgpuBackend {
             effect,
             pass,
             pipeline,
+            output_source,
             layout,
             entries,
             constant_sizes,
@@ -1614,6 +2118,14 @@ impl FfxInterface for FfxWgpuBackend {
         {
             *slot = None;
         }
+        self.output_variants.retain(|(original, _), variant| {
+            if *original == pipeline.pipeline {
+                self.pipelines[*variant] = None;
+                false
+            } else {
+                true
+            }
+        });
         pipeline.pipeline = 0;
         pipeline.root_signature = 0;
         pipeline.cmd_signature = 0;
@@ -1643,13 +2155,23 @@ impl FfxInterface for FfxWgpuBackend {
         let mut failure = None;
         for (job, constants) in jobs.iter().zip(&constants) {
             if let FfxGpuJobDescriptor::Compute(compute) = &job.descriptor
+                && let Err(error) = self.prepare_output_pipeline(compute)
+            {
+                failure = Some((job, error));
+                break;
+            }
+            if let FfxGpuJobDescriptor::Compute(compute) = &job.descriptor
                 && let Err(error) = self.back_buffer_bindings(&mut encoder, compute)
             {
-                failure = Some((job, JobFailure::from(error)));
+                failure = Some((job, error));
                 break;
             }
             self.observe(&mut observer, &mut encoder, job, false);
             let result = match &job.descriptor {
+                // wgpu tracks transitions between the separate compute passes.
+                // Discard only makes previous contents undefined in the SDK;
+                // this backend does not alias allocations, so no command is needed.
+                FfxGpuJobDescriptor::Barrier(_) | FfxGpuJobDescriptor::Discard(_) => Ok(()),
                 FfxGpuJobDescriptor::ClearFloat(clear) => self.execute_clear(&mut encoder, clear),
                 FfxGpuJobDescriptor::Copy(copy) => self
                     .execute_copy(&mut encoder, copy)
@@ -1660,6 +2182,12 @@ impl FfxInterface for FfxWgpuBackend {
             };
             if let Err(error) = result {
                 failure = Some((job, error));
+                break;
+            }
+            if let FfxGpuJobDescriptor::Compute(compute) = &job.descriptor
+                && let Err(error) = self.restore_buffer_bindings(&mut encoder, compute)
+            {
+                failure = Some((job, JobFailure::from(error)));
                 break;
             }
             self.observe(&mut observer, &mut encoder, job, true);
@@ -1713,6 +2241,7 @@ pub fn ffx_get_resource_description_wgpu(texture: &wgpu::Texture) -> FfxResource
 fn create_object(
     device: &wgpu::Device,
     d: &FfxCreateResourceDescription,
+    format_override: Option<wgpu::TextureFormat>,
 ) -> Result<(Object, u64), FfxErrorCode> {
     let description = d.resource_description;
     if description.r#type == FfxResourceType::Buffer {
@@ -1732,7 +2261,9 @@ fn create_object(
         });
         return Ok((Object::Buffer(buffer), size));
     }
-    let format = storage_texture_format(&description)?;
+    let format = format_override
+        .map(Ok)
+        .unwrap_or_else(|| storage_texture_format(&description))?;
     let (dimension, layers) = match description.r#type {
         FfxResourceType::Texture1D => (wgpu::TextureDimension::D1, 1),
         FfxResourceType::Texture2D => (wgpu::TextureDimension::D2, 1),
@@ -1969,6 +2500,9 @@ fn sampler(
 fn storage_format_name(format: wgpu::TextureFormat) -> Option<&'static str> {
     use wgpu::TextureFormat as T;
     Some(match format {
+        T::R32Uint => "r32uint",
+        T::R8Uint => "r8uint",
+        T::Rg16Sint => "rg16sint",
         T::Rgba32Float => "rgba32float",
         T::Rgba16Float => "rgba16float",
         T::Rg32Float => "rg32float",

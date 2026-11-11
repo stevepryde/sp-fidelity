@@ -5,7 +5,7 @@
 [![sp-fidelity-wgpu on crates.io](https://img.shields.io/crates/v/sp-fidelity-wgpu.svg?label=sp-fidelity-wgpu)](https://crates.io/crates/sp-fidelity-wgpu)
 [![sp-fidelity-wgpu docs](https://docs.rs/sp-fidelity-wgpu/badge.svg)](https://docs.rs/sp-fidelity-wgpu)
 
-A standalone, unofficial 1:1 Rust and WGSL port of the FSR2 C++ and HLSL
+A standalone, unofficial 1:1 Rust and WGSL port of the FSR2 and FSR3.1.4 C++ and HLSL
 source in [AMD FidelityFX SDK 1.1.4](crates/sp-fidelity/vendor/sdk-1.1.4/source-revision.txt),
 produced entirely using AI coding agents, with a wgpu backend.
 Not affiliated with, endorsed by, or supported by AMD.
@@ -17,13 +17,14 @@ Not affiliated with, endorsed by, or supported by AMD.
 | FSR2 temporal upscaling: Quality, Balanced, Performance, Ultra Performance | Supported |
 | HDR, dynamic resolution, automatic exposure, RCAS sharpening | Supported |
 | All FSR2 GPU passes, FP32 and optional FP16 permutations | Supported |
+| FSR3.1.4 upscaling, optical flow, frame interpolation, composite host API | Ported; see conformance record |
 | Supporting SDK host core, GPU core and SPD | Supported |
 | Native wgpu backend | Supported; conformance recorded on Apple Metal |
 | WASM compilation (`wasm32-unknown-unknown`) | Supported |
 | Other FidelityFX effects | Planned |
-| FSR2 execution in browser WebGPU, forced wave64 | Not supported |
+| FSR2/FSR3 execution in browser WebGPU, forced wave64 | Not supported |
 
-Recorded conformance against the original: **9 host test cases, 16,866
+Recorded FSR2 conformance against the original: **9 host test cases, 16,866
 matching host events, and 64,005 bit-exact GPU output comparisons**.
 See [CONFORMANCE.md](crates/sp-fidelity/CONFORMANCE.md) for the full results,
 known differences and platform limitations. DX12/Vulkan conformance is not
@@ -39,6 +40,16 @@ sp-fidelity = "0.2.0"
 sp-fidelity-wgpu = "0.2.0"
 wgpu = "30.0.1"
 ```
+
+The FSR3 composite example runs upscaling and frame generation on a native GPU:
+
+```sh
+cargo run -p sp-fidelity-wgpu --example fsr3
+```
+
+Applications own their surface and presentation timing; the wgpu backend forwards
+frame-generation configuration to an application callback. It does not replace
+a DXGI/Vulkan swapchain.
 
 See the [core crate](crates/sp-fidelity/README.md) and
 [wgpu integration guide](crates/sp-fidelity-wgpu/README.md).

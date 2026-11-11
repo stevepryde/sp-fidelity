@@ -1,0 +1,90 @@
+{
+  "metalEntryPoint": "main0",
+  "workgroupSize": [
+    256,
+    1,
+    1
+  ],
+  "resources": [
+    {
+      "name": "r_farthest_depth",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_current_luma",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 2,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_farthest_depth_mip1",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 8,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_frame_info",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 3,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_spd_mip5",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 7,
+      "arrayIndex": 0,
+      "mslIndex": 4,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_spd_global_atomic",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 5,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "cbFSR3Upscaler",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "buffer",
+      "byteSize": 148
+    },
+    {
+      "name": "cbSPD",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "buffer",
+      "byteSize": 24
+    }
+  ]
+}

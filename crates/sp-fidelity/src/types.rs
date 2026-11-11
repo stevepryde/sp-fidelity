@@ -185,6 +185,64 @@ pub enum FfxGpuJobType {
     Discard = 4,
 }
 
+/// `FfxBarrierType`.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FfxBarrierType {
+    #[default]
+    Transition = 0,
+    Uav = 1,
+}
+
+/// `FfxBackbufferTransferFunction`.
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FfxBackbufferTransferFunction {
+    #[default]
+    Srgb = 0,
+    Pq = 1,
+    Scrgb = 2,
+}
+
+/// `FfxRect2D`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FfxRect2D {
+    pub left: i32,
+    pub top: i32,
+    pub width: i32,
+    pub height: i32,
+}
+
+/// `FfxSwapchain` (`void*`): opaque backend handle, `0` is `NULL`.
+pub type FfxSwapchain = usize;
+
+/// `FfxPresentCallbackDescription`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FfxPresentCallbackDescription {
+    pub device: FfxDevice,
+    pub command_list: FfxCommandList,
+    pub current_back_buffer: FfxResource,
+    pub current_ui: FfxResource,
+    pub output_swap_chain_buffer: FfxResource,
+    pub is_interpolated_frame: bool,
+    pub use_premul_alpha: bool,
+    pub frame_id: u64,
+}
+
+/// `FfxFrameGenerationDispatchDescription`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FfxFrameGenerationDispatchDescription {
+    pub command_list: FfxCommandList,
+    pub present_color: FfxResource,
+    pub outputs: [FfxResource; 4],
+    pub num_interpolated_frames: u32,
+    pub reset: bool,
+    pub back_buffer_transfer_function: FfxBackbufferTransferFunction,
+    pub min_max_luminance: [f32; 2],
+    pub interpolation_rect: FfxRect2D,
+    pub frame_id: u64,
+}
+
 /// `FfxBindStage` bit set.
 pub type FfxBindStage = u32;
 pub const FFX_BIND_PIXEL_SHADER_STAGE: FfxBindStage = 1 << 0;
@@ -509,13 +567,30 @@ pub struct FfxCopyJobDescription {
     pub size: u32,
 }
 
-/// The union in `FfxGpuJobDescription`, tagged by `jobType`. Only the clear,
-/// copy and compute jobs are ported.
+/// `FfxBarrierDescription`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FfxBarrierDescription {
+    pub resource: FfxResourceInternal,
+    pub barrier_type: FfxBarrierType,
+    pub current_state: FfxResourceStates,
+    pub new_state: FfxResourceStates,
+    pub sub_resource_id: u32,
+}
+
+/// `FfxDiscardJobDescription`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FfxDiscardJobDescription {
+    pub target: FfxResourceInternal,
+}
+
+/// The union in `FfxGpuJobDescription`, tagged by `jobType`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FfxGpuJobDescriptor {
     ClearFloat(FfxClearFloatJobDescription),
     Copy(FfxCopyJobDescription),
     Compute(Box<FfxComputeJobDescription>),
+    Barrier(FfxBarrierDescription),
+    Discard(FfxDiscardJobDescription),
 }
 
 /// `FfxGpuJobDescription`.
@@ -532,6 +607,8 @@ impl FfxGpuJobDescription {
             FfxGpuJobDescriptor::ClearFloat(_) => FfxGpuJobType::ClearFloat,
             FfxGpuJobDescriptor::Copy(_) => FfxGpuJobType::Copy,
             FfxGpuJobDescriptor::Compute(_) => FfxGpuJobType::Compute,
+            FfxGpuJobDescriptor::Barrier(_) => FfxGpuJobType::Barrier,
+            FfxGpuJobDescriptor::Discard(_) => FfxGpuJobType::Discard,
         }
     }
 }

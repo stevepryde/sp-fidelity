@@ -1,0 +1,130 @@
+{
+  "metalEntryPoint": "main0",
+  "workgroupSize": [
+    8,
+    8,
+    1
+  ],
+  "resources": [
+    {
+      "name": "r_current_interpolation_source",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 7,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_disocclusion_mask",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 4,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_game_motion_vector_field_x",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 2,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_game_motion_vector_field_y",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 3,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_optical_flow_motion_vector_field_x",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 2,
+      "arrayIndex": 0,
+      "mslIndex": 4,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_optical_flow_motion_vector_field_y",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 3,
+      "arrayIndex": 0,
+      "mslIndex": 5,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_inpainting_pyramid",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 6,
+      "arrayIndex": 0,
+      "mslIndex": 6,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_present_backbuffer",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 5,
+      "arrayIndex": 0,
+      "mslIndex": 7,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_input_distortion_field",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 8,
+      "arrayIndex": 0,
+      "mslIndex": 8,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "s_LinearClamp",
+      "kind": "sampler",
+      "registerClass": "s",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "sampler",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_output",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 9,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "cbFI",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "buffer",
+      "byteSize": 176
+    }
+  ]
+}

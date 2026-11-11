@@ -53,8 +53,16 @@ texture with `ffx_get_resource_description_wgpu`; the handle stays valid until
 the next `ffx_take_command_list_wgpu`. Each pass views a texture as its binding
 declares. A UAV of a mip the texture lacks views its last mip, as AMD's Vulkan
 backend binds it: FSR2's luminance pyramid binds mips 4 and 5 of a texture that
-has them only from a 64-pixel maximum render size. A copy destination needs
-`COPY_DST` and a copy source `COPY_SRC`.
+has them only from a 64-pixel maximum render size. FI SPD instead binds
+distinct inert views for absent mips, avoiding incompatible access aliases;
+its mip-count guards leave these views unused. A copy destination needs
+`COPY_DST` and a copy source `COPY_SRC`. FSR3's shared, upscaling and frame
+interpolation interfaces must be clones of the same interface: resource and
+command-list handles belong to one backend instance. Shared optical-flow
+textures need `TEXTURE_BINDING | STORAGE_BINDING`; buffer-backed passes
+synchronize their original textures so subsequent effects and caller reads
+see their writes. Frame interpolation specializes output pipelines from the
+actual bound output texture format and caches each format variant.
 
 Each pipeline keeps the bind groups of the last two resource sets its jobs
 bound (FSR2 alternates two by frame) and its own uniform buffers, into which
@@ -65,10 +73,36 @@ is destroyed.
 `set_fp16_supported(false)` reports a device without FP16 so contexts created
 afterwards use the FP32 permutations.
 
+## Frame generation
+
+`cargo run -p sp-fidelity-wgpu --example fsr3` runs four combined upscale and
+frame-generation frames, including the configuration callback and an RGBA8
+interpolated output. It reads the result back from the GPU.
+
+Install `set_frame_generation_configurator(Some(Box::new(...)))` to connect
+FSR3 configuration to your presentation scheduler. The closure receives the
+SDK's `FfxFrameGenerationConfig`, including the generation and presentation
+callbacks and frame ID. Store or apply it, then call generation when the input
+frame and its prepare data are ready. Without this hook, configuration returns
+`FFX_ERROR_BACKEND_API_ERROR`. Contexts, backend handles, and callbacks belong
+to their creating thread. The application owns its surface, callback timing,
+UI composition, and presentation pacing; the SDK's platform-specific proxy
+swapchains are not implemented by wgpu.
+
+Caller-created R32Uint textures used for reconstructed depth must include
+`STORAGE_ATOMIC` as well as `STORAGE_BINDING`. Textures created through the
+backend's SDK resource descriptions get this usage automatically.
+
+Use storage-capable typed color formats for frame-generation resources.
+BGRA8 storage additionally requires `wgpu::Features::BGRA8UNORM_STORAGE` on
+the device. Typeless formats have no wgpu equivalent, and sRGB storage formats
+are unavailable in WGSL; use linear-format storage with the SDK's explicit
+backbuffer transfer function and let the application handle presentation.
+
+
 ## Features
 
-`required_features()` is derived from the FSR2 WGSL and the resources
-`ffx_fsr2.cpp` creates:
+`required_features()` covers the native features used by FSR2 and FSR3:
 
 | Feature | Needed for |
 | --- | --- |
@@ -78,8 +112,9 @@ afterwards use the FP32 permutations.
 | `TEXTURE_FORMAT_16BIT_NORM` | the R16_SNORM Lanczos and maximum-bias lookup textures |
 | `FLOAT32_FILTERABLE` | linear sampling of 32-bit float application inputs |
 
-Clears are storage writes of the job's colour (`ClearUnorderedAccessViewFloat`),
-so `CLEAR_TEXTURE` is not needed.
+Clears use storage writes, so `CLEAR_TEXTURE` is not needed. `R32Uint` clears
+preserve the float colour's bit pattern, including the `1.0` depth sentinel;
+`R8Uint` and `Rg16Sint` support the zero clears used by the SDK.
 
 ## WASM and WebGPU
 
@@ -87,7 +122,7 @@ The runtime crates compile for `wasm32-unknown-unknown` with wgpu's WebGPU
 backend enabled. Shader reflection uses Naga directly from wgpu's compatible
 release line.
 
-FSR2 execution in browser WebGPU is not supported: `required_features()`
+FSR2 and FSR3 execution in browser WebGPU is not supported: `required_features()`
 includes native-only texture atomics, 16-bit normalized and adapter-specific
 formats. Applications choose their own fallback when those features are
 unavailable. `readback::Readback::read_all` blocks for GPU completion and is
@@ -106,11 +141,23 @@ Only here, never in the port:
 - Metal has no read-write `Rg32Float` storage texture: an `R32G32_FLOAT` UAV
   the effect creates (FSR2's auto exposure) is an `Rgba32Float` texture, its
   initial data widened with zero `.zw`; the port reads and writes `.xy`.
-- WGSL texture atomics return nothing, so the port binds FSR2's SPD counter
-  (a 1x1 `R32_UINT` UAV texture in the SDK) as a one-element storage buffer.
-  From the first job whose pipeline binds a texture the effect created as a
-  buffer, a buffer holding the texture's contents (initial data, clears)
-  replaces it; a zero clear of it clears the buffer.
+- WGSL texture atomics return nothing. FSR2 and FSR3 upscaler SPD counters
+  become private storage buffers on first use; their initial data and clears
+  are preserved. Frame interpolation game-vector fields and optical flow's
+  scene-change output, histogram, and temporary counters use packed
+  `R32Uint` buffers while retaining
+  their original texture handles. Compute transfers synchronize those texels
+  before buffer-backed reads and after writes, including across effects.
+- Metal cannot read and write `Rg16Sint` textures in one pass. Optical flow's
+  advanced search binds a packed storage buffer, with signed X in the low
+  16 bits and signed Y in the high 16 bits. Transfers preserve the texture's
+  signed 16-bit values; later texture passes and caller reads see its writes.
+- Metal cannot read and write `Rg16Float` textures in one pass. FSR3 upscaler's
+  SPD mip texture is allocated as `Rgba16Float`; only `.xy` stores SDK data.
+  Its read-write declarations are specialized by the backend. Other RG16F
+  resources retain their original format.
+- Optical flow's optional 1D allocations use one-row 2D textures to match
+  the original shaders' 2D bindings. Logical SDK descriptions remain 1D.
 - SDK-P28: wgpu reports a view or bind group it rejects when it is created,
   but recording it invalidates the caller's whole encoder at `finish`. A
   clear or compute job creates its new ones inside validation and

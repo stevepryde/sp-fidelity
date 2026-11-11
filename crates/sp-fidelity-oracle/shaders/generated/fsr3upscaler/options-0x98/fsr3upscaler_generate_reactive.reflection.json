@@ -1,0 +1,50 @@
+{
+  "metalEntryPoint": "main0",
+  "workgroupSize": [
+    8,
+    8,
+    1
+  ],
+  "resources": [
+    {
+      "name": "r_input_color_jittered",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_input_opaque_only",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_output_autoreactive",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 2,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "cbGenerateReactive",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "buffer",
+      "byteSize": 16
+    }
+  ]
+}

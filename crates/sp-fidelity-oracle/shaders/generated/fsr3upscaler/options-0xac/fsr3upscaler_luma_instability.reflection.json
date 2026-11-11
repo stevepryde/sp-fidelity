@@ -1,0 +1,100 @@
+{
+  "metalEntryPoint": "main0",
+  "workgroupSize": [
+    8,
+    8,
+    1
+  ],
+  "resources": [
+    {
+      "name": "r_luma_history",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 4,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_current_luma",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 6,
+      "arrayIndex": 0,
+      "mslIndex": 2,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_dilated_motion_vectors",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 2,
+      "arrayIndex": 0,
+      "mslIndex": 4,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_input_exposure",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 5,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_dilated_reactive_masks",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 6,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "s_LinearClamp",
+      "kind": "sampler",
+      "registerClass": "s",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "sampler",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_luma_history",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_luma_instability",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 3,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "cbFSR3Upscaler",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "buffer",
+      "byteSize": 148
+    }
+  ]
+}

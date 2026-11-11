@@ -16,7 +16,7 @@ static void wide(wchar_t* out, const std::string& s) { for(char c:s) *out++=c; *
 uint32_t word() { uint32_t v; if(!(std::cin>>v)) throw std::runtime_error("truncated oracle input"); return v; }
 float scalar() { uint32_t v=word(); float f; std::memcpy(&f,&v,4); return f; }
 // One DXC-reflected resource of a compiled pass variant: pass, permutation options, kind, register, array index, name.
-struct Binding { uint32_t stage, options; std::string kind; uint32_t slot, index; std::string name; };
+struct Binding { uint32_t effect, stage, options; std::string kind; uint32_t slot, index; std::string name; };
 struct Stored { FfxResourceDescription desc; std::string name; };
 static std::vector<Binding> bindings;
 static std::map<int,Stored> resources;
@@ -32,17 +32,18 @@ static void words(const void* data,size_t count) {
     for(size_t i=0;i<count;i++) { if(i)std::cout<<',';std::cout<<p[i]; }
     std::cout<<']';
 }
-static FfxErrorCode createPipeline(FfxInterface*,FfxEffect,FfxPass pass,uint32_t flags,const FfxPipelineDescription* desc,FfxUInt32,FfxPipelineState* out) {
+static FfxErrorCode createPipeline(FfxInterface*,FfxEffect effect,FfxPass pass,uint32_t flags,const FfxPipelineDescription* desc,FfxUInt32,FfxPipelineState* out) {
     *out={}; out->passId=pass; out->pipeline=reinterpret_cast<void*>(uintptr_t(pass+1));
     out->cmdSignature=desc->indirectWorkload ? reinterpret_cast<void*>(1) : nullptr;
     wcscpy_s(out->name,desc->name);
     bool compiled=false;
-    for(const auto& b:bindings) if(b.stage==pass && b.options==flags) {
+    for(const auto& b:bindings) if((b.effect==UINT32_MAX || b.effect==uint32_t(effect)) && b.stage==pass && b.options==flags) {
         compiled=true;
         FfxResourceBinding* dest=nullptr;
         if(b.kind=="srv")dest=&out->srvTextureBindings[out->srvTextureCount++];
         else if(b.kind=="uav")dest=&out->uavTextureBindings[out->uavTextureCount++];
         else if(b.kind=="buffer")dest=&out->uavBufferBindings[out->uavBufferCount++];
+        else if(b.kind=="srv-buffer")dest=&out->srvBufferBindings[out->srvBufferCount++];
         else if(b.kind=="cb")dest=&out->constantBufferBindings[out->constCount++];
         else throw std::runtime_error("unknown reflection kind");
         dest->slotIndex=b.slot;dest->arrayIndex=b.index;wide(dest->name,b.name);
@@ -58,7 +59,11 @@ static FfxErrorCode createPipeline(FfxInterface*,FfxEffect,FfxPass pass,uint32_t
     return FfxErrorCode(FFX_OK);
 }
 static FfxErrorCode schedule(FfxInterface*,const FfxGpuJobDescription* job) {
-    if(job->jobType==FFX_GPU_JOB_CLEAR_FLOAT) {
+    if(job->jobType==FFX_GPU_JOB_DISCARD) {
+        std::cout<<"[\"discard\",";quoted(name(job->discardJobDescriptor.target));std::cout<<',';quoted(narrow(job->jobLabel));std::cout<<"]\n";
+    } else if(job->jobType==FFX_GPU_JOB_BARRIER) {
+        auto c=job->barrierDescriptor;std::cout<<"[\"barrier\",";quoted(name(c.resource));std::cout<<','<<c.barrierType<<','<<c.currentState<<','<<c.newState<<','<<c.subResourceID<<',';quoted(narrow(job->jobLabel));std::cout<<"]\n";
+    } else if(job->jobType==FFX_GPU_JOB_CLEAR_FLOAT) {
         std::cout<<"[\"clear\",";quoted(name(job->clearJobDescriptor.target));std::cout<<',';words(job->clearJobDescriptor.color,4);std::cout<<',';quoted(narrow(job->jobLabel));std::cout<<"]\n";
     } else if(job->jobType==FFX_GPU_JOB_COPY) {
         auto c=job->copyJobDescriptor;std::cout<<"[\"copy\",";quoted(name(c.src));std::cout<<',';quoted(name(c.dst));std::cout<<','<<c.srcOffset<<','<<c.dstOffset<<','<<c.size<<',';quoted(narrow(job->jobLabel));std::cout<<"]\n";
@@ -72,6 +77,7 @@ static FfxErrorCode schedule(FfxInterface*,const FfxGpuJobDescription* job) {
         for(uint32_t i=0;i<p.srvTextureCount;i++)resource("srv",p.srvTextureBindings[i],c.srvTextures[i].resource,0);
         for(uint32_t i=0;i<p.uavTextureCount;i++)resource("uav",p.uavTextureBindings[i],c.uavTextures[i].resource,c.uavTextures[i].mip);
         for(uint32_t i=0;i<p.uavBufferCount;i++)resource("buffer",p.uavBufferBindings[i],c.uavBuffers[i].resource,0);
+        for(uint32_t i=0;i<p.srvBufferCount;i++)resource("srv-buffer",p.srvBufferBindings[i],c.srvBuffers[i].resource,0);
         std::cout<<"],[";
         for(uint32_t i=0;i<p.constCount;i++) {
             if(i)std::cout<<',';std::cout<<'[';quoted(narrow(p.constantBufferBindings[i].name));std::cout<<',';words(c.cbs[i].data,c.cbs[i].num32BitEntries);std::cout<<','<<p.constantBufferBindings[i].slotIndex<<']';
@@ -138,7 +144,7 @@ int main(int argc,char** argv) {
         if(argc<2 || argc>3)throw std::runtime_error("usage: host-oracle shader-bindings.txt [init-data-directory] < inputs.words");
         if(argc==3)dataDirectory=argv[2];
         std::ifstream reflected(argv[1]);if(!reflected)throw std::runtime_error("cannot open shader reflection");
-        Binding binding;while(reflected>>binding.stage>>binding.options>>binding.kind>>binding.slot>>binding.index>>binding.name)bindings.push_back(binding);
+        Binding binding;while(reflected>>binding.effect>>binding.stage>>binding.options>>binding.kind>>binding.slot>>binding.index>>binding.name)bindings.push_back(binding);
         capabilities.fp16Supported=word()!=0;capabilities.waveLaneCountMin=word();capabilities.waveLaneCountMax=word();capabilities.maximumSupportedShaderModel=FfxShaderModel(word());
         return runEffect();
     } catch(const std::exception& e) {std::cerr<<e.what()<<'\n';return 1;}

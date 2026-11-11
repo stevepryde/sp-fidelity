@@ -86,7 +86,7 @@ fn expected_dumps(case: &Path, stages: &[&str]) -> Result<HashMap<PathBuf, Expec
             "compute" => {
                 let stage = stages[n(1) as usize];
                 for binding in event[5].as_array().unwrap() {
-                    if binding[0] == "srv" {
+                    if binding[0] == "srv" || binding[0] == "srv-buffer" {
                         continue;
                     }
                     let name = binding[2].as_str().unwrap().to_owned();
@@ -145,9 +145,9 @@ fn texture_bytes(shape: Shape, mip: u32) -> usize {
     let texel = match shape.format {
         3 => 16,
         4 | 6 => 8,
-        8 | 10 | 16 | 17 | 18 | 28 => 4,
+        8 | 10 | 16 | 17 | 18 | 20 | 28 => 4,
         21 | 24 | 26 => 2,
-        25 => 1,
+        7 | 25 => 1,
         format => panic!("unsupported surface format {format}"),
     };
     (shape.width >> mip).max(1) as usize
@@ -200,6 +200,7 @@ fn decode(format: u32, bytes: &[u8]) -> Vec<Vec<f64>> {
         3 => (16, &f32s),
         4 => (8, &u16s),
         6 => (8, &f32s),
+        7 => (1, &|c: &[u8]| vec![f64::from(c[0])]),
         8 => (4, &|c: &[u8]| {
             vec![f64::from(u32::from_le_bytes(c.try_into().unwrap()))]
         }),
@@ -212,6 +213,11 @@ fn decode(format: u32, bytes: &[u8]) -> Vec<Vec<f64>> {
             ]
         }),
         18 => (4, &u16s),
+        20 => (4, &|c: &[u8]| {
+            c.chunks_exact(2)
+                .map(|b| f64::from(i16::from_le_bytes([b[0], b[1]])))
+                .collect()
+        }),
         21 => (2, &u16s),
         24 => (2, &|c: &[u8]| {
             vec![(f64::from(i16::from_le_bytes([c[0], c[1]])) / 32767.).max(-1.)]
@@ -408,7 +414,11 @@ pub fn compare(
             bounds,
             verdict: Err(String::new()),
         };
-        difference.verdict = admit(&difference);
+        difference.verdict = if matches!(e.shape.format, 7 | 20) {
+            Err("integer textures must match exactly".into())
+        } else {
+            admit(&difference)
+        };
         result.differences.push(difference);
     }
     result

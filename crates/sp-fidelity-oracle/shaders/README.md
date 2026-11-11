@@ -5,7 +5,7 @@ pass HLSL (`../sp-fidelity/vendor/sdk-1.1.4`, revision
 `c6efa6bf7f2027b3ec94f28578bb5965eabb9e55`) compiled for the Metal oracle,
 one directory per permutation options value. AMD's MIT license applies to them
 as derivatives of the SDK source. They are the oracle's shader path, not the
-port's, and are never shipped. Only the FSR2 host test's variants are tracked;
+port's, and are never shipped. Only host-test variants are tracked;
 the others are generated before a Metal oracle run (see Regeneration).
 
 Each pass has:
@@ -113,3 +113,33 @@ spirv-cross fsr2_rcas.spv --reflect --output fsr2_rcas.spirv.json
 The register shifts are the port's WGSL binding offsets, 64 registers per
 class. A manifest records each command with the checkout's paths relative to
 the crate.
+
+## FSR3.1 exports
+
+From the oracle crate directory, export the full upscaler table and the
+optical-flow/frame-interpolation tables with the same pinned tools:
+
+```sh
+for o in $(seq 0 63) $(seq 128 191); do
+  python3 tools/compile_dxc_oracle.py --effect fsr3upscaler --options "$o" \
+    --dxc ~/VulkanSDK/1.4.357.1/macOS/bin/dxc-3.7 --spirv-cross /opt/homebrew/bin/spirv-cross
+done
+for o in 0 2 4 6; do
+  python3 tools/compile_dxc_oracle.py --effect opticalflow --options "$o" \
+    --dxc ~/VulkanSDK/1.4.357.1/macOS/bin/dxc-3.7 --spirv-cross /opt/homebrew/bin/spirv-cross
+done
+for o in $(seq 0 7) $(seq 16 23); do
+  python3 tools/compile_dxc_oracle.py --effect frameinterpolation --options "$o" \
+    --dxc ~/VulkanSDK/1.4.357.1/macOS/bin/dxc-3.7 --spirv-cross /opt/homebrew/bin/spirv-cross
+done
+```
+
+`tools/framegen_effects.py` defines the frame-generation pass tables and UAV
+formats. Optical flow and frame interpolation always select FP32 shader
+tables in the original blob accessors, even when their FP16 option bit is
+set. FSR3 upscaler SPD also retains its upstream FP32 override. Reflection
+aliases for forced wave64 support host scheduling comparisons only; they do
+not establish forced-wave64 GPU execution.
+
+All 1,408 upscaler exports and 204 frame-generation exports were compiled
+through Metal's runtime compiler on Apple M5 during the FSR3.1 port.

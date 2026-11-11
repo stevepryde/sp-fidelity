@@ -2,7 +2,7 @@
 
 Development-only evidence for the [`sp-fidelity`](../sp-fidelity/README.md) port
 and [`sp-fidelity-wgpu`](../sp-fidelity-wgpu/README.md). Not
-published; neither runtime crate depends on it. It holds the FSR2 host and
+published; neither runtime crate depends on it. It holds the FSR2 and full FSR3.1 host and
 GPU comparisons against the original SDK source.
 
 - `oracle/host.cpp` runs AMD's unchanged C++ host of an effect through a
@@ -125,3 +125,30 @@ the original through the same Metal compiler without fast math.
 computes its `cbRCAS` with AMD's host code) and the accumulate passes, whose
 jobs, `cbFSR2` and Lanczos LUT data come from AMD's C++ host
 (`oracle/fsr2_host.cpp`), in every permutation.
+
+## FSR3.1 comparisons
+
+The pinned SDK provides the FSR3.1.4 composite API, FSR3 upscaler, optical
+flow, and frame interpolation. Each has an unchanged C++ driver and a Rust
+host-event comparison. Composite binding tables carry effect IDs so passes
+from different effects cannot collide. Optical-flow SPD constants compare
+all initialized words; the C++ structure's three uninitialized padding words
+are excluded. Windows wide-string traits and formatting are supplied locally
+in `compat.h`, without editing the SDK.
+
+After exporting the variants below, run the GPU comparisons separately:
+
+```sh
+cargo test -p sp-fidelity-oracle --release --test fsr3upscaler_passes -- --ignored --nocapture
+cargo test -p sp-fidelity-oracle --release --test opticalflow_passes -- --ignored --nocapture
+cargo test -p sp-fidelity-oracle --release --test frameinterpolation_passes -- --ignored --nocapture
+cargo run -p sp-fidelity-wgpu --example fsr3
+```
+
+The comparisons retain per-pass captures for both identical-input replay and
+independent temporal histories. Strict Metal comparisons disable fast math
+on both sides, use the same supported Metal language version as wgpu, and
+allocate Naga's dynamic threadgroup memory from reflection. Known upstream inter-workgroup races and compiler arithmetic
+differences are reported separately in
+[CONFORMANCE.md](../sp-fidelity/CONFORMANCE.md); a tainted independent history
+is not evidence of exact output equivalence.

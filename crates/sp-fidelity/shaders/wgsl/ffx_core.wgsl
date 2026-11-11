@@ -938,4 +938,28 @@ fn isnan_f32x3(x: FfxFloat32x3) -> vec3<bool>
     return (bitcast<FfxUInt32x3>(x) & FfxUInt32x3(0x7fffffffu)) > FfxUInt32x3(0x7f800000u);
 }
 
+// ffx_core_hlsl.h:1378. WGSL's unpack is the HLSL f16tof32 pair.
+fn ffxUnpackF32(value: FfxUInt32) -> FfxFloat32x2 {
+    return unpack2x16float(value);
+}
+
+// ffx_core_gpu_common.h:2592, the SDK's PQ transfer function.
+fn ffxLinearFromPQ_f32x3(value: FfxFloat32x3) -> FfxFloat32x3 {
+    let p = pow(value, FfxFloat32x3(0.0126833));
+    return pow(clamp(p - FfxFloat32x3(0.835938), FfxFloat32x3(0.0), FfxFloat32x3(1.0)) /
+        (FfxFloat32x3(18.8516) - FfxFloat32x3(18.6875) * p), FfxFloat32x3(6.27739));
+}
+
+// ffx_core_gpu_common.h:2687. Preserve the arithmetic ZeroOneSelect,
+// including its degenerate evaluations, instead of substituting a branch.
+fn ffxLinearFromSrgb_f32x3(value: FfxFloat32x3) -> FfxFloat32x3 {
+    let j = FfxFloat32x3(0.04045, 1.0 / 12.92, 2.4);
+    let k = FfxFloat32x2(1.0 / 1.055, 0.055 / 1.055);
+    let x = clamp((value - j.xxx) * FfxFloat32x3(bitcast<f32>(0xff800000u)), FfxFloat32x3(0.0), FfxFloat32x3(1.0));
+    let y = value * j.yyy;
+    let z = pow(value * k.xxx + k.yyy, j.zzz);
+    let r = (-x) * z + z;
+    return x * y + r;
+}
+
 #endif // #ifndef FFX_CORE_H
