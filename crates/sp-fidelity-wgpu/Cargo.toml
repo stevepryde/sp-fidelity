@@ -21,5 +21,8 @@ wgpu-naga-bridge = "30.0.1"
 [dev-dependencies]
 pollster.workspace = true
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+winit.workspace = true
+
 [lints.rust]
 unsafe_code = "forbid"

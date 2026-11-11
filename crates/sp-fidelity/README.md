@@ -36,10 +36,12 @@ context allocates these and the optical-flow resources itself.
 With wgpu, use clones of one backend interface for all three composite
 interfaces. `ffx_fsr3_get_frame_generation_callback` creates a callback with
 weak ownership of the context; invoke it on the context's thread. Configuration
-forwards to the application's presentation scheduler through the backend's
-`set_frame_generation_configurator` hook. The application owns presentation,
-UI composition, and frame pacing; no DXGI/Vulkan proxy swapchain is provided.
-See the backend's [combined example](../sp-fidelity-wgpu/examples/fsr3.rs).
+forwards through the backend's `set_frame_generation_configurator` hook.
+The native backend's `presentation::FrameInterpolationSwapchain` installs this
+hook and ports AMD's pacing, UI composition and presentation scheduling to a
+caller-owned wgpu surface. A custom scheduler can install the hook instead.
+See the [windowed example](../sp-fidelity-wgpu/examples/fsr3_present.rs) and
+[backend integration guide](../sp-fidelity-wgpu/README.md#native-presentation).
 
 The pinned composite C++ leaves its private mode flags zero and omits
 `upscaleSize` forwarding. Those behaviors are preserved: composite

@@ -18,6 +18,7 @@ Not affiliated with, endorsed by, or supported by AMD.
 | HDR, dynamic resolution, automatic exposure, RCAS sharpening | Supported |
 | All FSR2 GPU passes, FP32 and optional FP16 permutations | Supported |
 | FSR3.1.4 upscaling, optical flow, frame interpolation, composite host API | Ported; see conformance record |
+| Native FSR3 presentation, pacing, UI composition and lifecycle | Ported to wgpu; see conformance record |
 | Supporting SDK host core, GPU core and SPD | Supported |
 | Native wgpu backend | Supported; conformance recorded on Apple Metal |
 | WASM compilation (`wasm32-unknown-unknown`) | Supported |
@@ -47,9 +48,19 @@ The FSR3 composite example runs upscaling and frame generation on a native GPU:
 cargo run -p sp-fidelity-wgpu --example fsr3
 ```
 
-Applications own their surface and presentation timing; the wgpu backend forwards
-frame-generation configuration to an application callback. It does not replace
-a DXGI/Vulkan swapchain.
+For a windowed example with AMD's presentation pacing, UI composition, frame
+generation toggles and resize:
+
+```sh
+cargo run -p sp-fidelity-wgpu --example fsr3_present -- --frames 120
+```
+
+Applications own their window and event loop. The native backend's
+`FrameInterpolationSwapchain` accepts their wgpu surface and handles generation,
+composition and paced presentation. It adapts the SDK's game-queue composition
+path to wgpu's single queue; native DXGI/Vulkan swapchain interception and OS
+latency facilities are unavailable. Applications can still install their own
+configuration callback instead.
 
 See the [core crate](crates/sp-fidelity/README.md) and
 [wgpu integration guide](crates/sp-fidelity-wgpu/README.md).

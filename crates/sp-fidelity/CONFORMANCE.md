@@ -201,10 +201,8 @@ them ignored. The FSR2 host comparisons and backend GPU regressions still pass.
   active pointer in the Rust API.
 - The three composite wgpu interfaces are clones of one backend, since its
   resource and command-list handles belong to that instance. Presentation
-  configuration is forwarded to an application adapter; wgpu does not
-  implement the SDK's DXGI/Vulkan proxy swapchains, OS presentation threads,
-  UI composition or frame pacing. The compute algorithms and SDK dispatch
-  sequencing are independent of that presentation adapter.
+  configuration is forwarded to the native wgpu presentation adapter (or an
+  application hook). See the native presentation adaptation below.
 - The original composite create function never assigns its private
   `upscalingOnly` and `interpolationOnly` fields. Their zero state is
   preserved. Interpolation-only composite creation consequently reaches an
@@ -389,3 +387,69 @@ Metal compiler does not fold even for level 0, and takes the texture size at
 that level. Loading at a constant level measured up to 0.03 ms of accumulate
 and 0.01 ms of reconstruct; removing it needs unchecked shader modules
 (`unsafe`) or a naga change.
+
+
+## Native presentation adaptation
+
+`sp-fidelity-wgpu::presentation` ports the retained SDK 1.1.4
+`FrameInterpolationSwapchain{DX12,VK}` sources at the same pinned revision as
+the compute port. Original sources and licenses are retained under
+`vendor/sdk-1.1.4/sdk/src/backends/`; they are references, not build inputs for
+the Rust runtime. The implementation preserves generation/real ordering,
+interpolation-only presentation, callbacks and frame metadata, UI formulas,
+completion-based pacing, enable/reset transitions, draining and bounded reuse.
+
+Required Rust/wgpu adaptations:
+
+- The SDK's Vulkan game-queue composition path keeps all `Rc` SDK callbacks
+  and contexts on their owner thread. Two bounded output slots hold prepared
+  images; owned wgpu textures cross threads, never transient SDK handles.
+  A completion worker waits for the interpolation submission and a separate
+  presenter worker acquires/copies/waits/presents. Both UI registration modes
+  submit input reads before returning; no additional UI snapshot is necessary.
+- wgpu exposes one queue. Async compute/present queue selection, priorities,
+  native semaphores, DXGI/Vulkan swapchain interception, exclusive fullscreen,
+  OS latency handles, HDR metadata and Anti-Lag integration cannot be ported
+  through its portable API. Surface configuration remains caller-owned.
+  GPU submission waits replace native fences; completion observation and
+  presentation-call timestamps do not establish scanout timing. Bounded FIFO
+  delivery replaces native scheduled-entry replacement/dropping.
+- Surface output uses raw-format views; BGRA surfaces use RGBA storage
+  intermediates. The consumer supplies display-encoded input and transfer
+  metadata. Default composition preserves alpha with no UI, and writes alpha
+  one with UI, matching the original HLSL. Custom callbacks receive an owned
+  composition output rather than an acquired native swapchain image.
+- Native standard-library threads and monotonic nanosecond timing replace
+  Win32 threads, QPC and events. AMD's ten-sample mean/standard deviation,
+  warmup, 100 ms timeout, float promotion, truncation order, variance factor
+  and safety margin are retained. Hybrid sleep has no portable OS timer
+  resolution control. Reconfiguration drains and resets timing; shutdown
+  joins workers. WASM builds the compute APIs and pacing math only.
+- Surface acquisition failures retire slots and are reported to the caller;
+  transient occlusion/timeouts do not poison later frames. Lost/outdated
+  surfaces require explicit reconfiguration. Generation failure presents the
+  real image instead of an unwritten interpolation output (upstream error
+  handling can retain the scheduled generated image). Custom composition
+  errors abort the frame and remain visible to the caller.
+- AMD's debug bar colors/cycle are retained, overlaid after composition.
+  The pinned DX12/Vulkan paths draw debug before the default full-frame UI
+  pass, which can overwrite it. The adapter fixes that ordering and preserves
+  scene pixels outside the 32-pixel indicator strip.
+
+Validation on Apple M5 / Metal:
+
+- `presentation_pacing` compiles the unchanged AMD moving-average template
+  and interpolation-thread arithmetic into a C++ oracle. 800 timestamp/reset/
+  tuning samples, including timeout boundaries, across four counter frequencies match exactly.
+- `presentation_composition` compiles unchanged AMD UI HLSL through DXC and
+  SPIRV-Cross to Metal. Copy, straight and premultiplied paths match RGBA8
+  output byte-for-byte over 256 varied input pixels per path.
+- Native GPU boundary tests exercise generated/real ordering, source and UI
+  overwrite while presentation is blocked, callback thread/resource scope,
+  external interpolation, generation failure, enable/disable, transient
+  surface recovery, reconfiguration and joined shutdown.
+- `fsr3_present --frames 120` runs actual composite upscaling and interpolation
+  into a real window with UI, generation toggles, resize and shutdown.
+
+These establish the tested algorithm and lifecycle boundaries, not complete
+DX12/Vulkan conformance, identical OS scheduling or visual correctness.

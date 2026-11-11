@@ -44,6 +44,7 @@ use wgpu::util::DeviceExt;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod atomic_tests;
 mod dispatch_grid;
+pub mod presentation;
 pub mod readback;
 
 /// The wgpu features every SDK pass needs; request them when creating the
@@ -472,6 +473,26 @@ impl FfxWgpuBackend {
             state,
             name: name.to_owned(),
         }
+    }
+
+    /// Resolve a live external resource for a presentation callback. The clone
+    /// retains the allocation, not a snapshot of its contents.
+    pub fn ffx_texture_wgpu(&self, resource: &FfxResource) -> Option<wgpu::Texture> {
+        match &self.handles.get(&resource.resource)?.object {
+            Object::Texture(texture) => Some(texture.clone()),
+            _ => None,
+        }
+    }
+
+    /// Borrow the current command encoder to record a custom presentation
+    /// callback. Resolve resource handles before borrowing this encoder.
+    pub fn ffx_command_encoder_wgpu(
+        &mut self,
+        command_list: FfxCommandList,
+    ) -> Option<&mut wgpu::CommandEncoder> {
+        self.command_lists
+            .get_mut(command_list.checked_sub(1)?)?
+            .as_mut()
     }
 
     /// The first job that stopped `execute_gpu_jobs` since the last call, if

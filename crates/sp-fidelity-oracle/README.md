@@ -152,3 +152,28 @@ allocate Naga's dynamic threadgroup memory from reflection. Known upstream inter
 differences are reported separately in
 [CONFORMANCE.md](../sp-fidelity/CONFORMANCE.md); a tainted independent history
 is not evidence of exact output equivalence.
+
+
+## Presentation comparisons
+
+The pacing oracle extracts and compiles the unchanged SDK moving-average
+class and interpolation-thread arithmetic from the retained DX12 source.
+The composition oracle executes Metal translated from the unchanged AMD UI
+HLSL, and compares the wgpu presentation output byte-for-byte. The three
+exported Metal shaders are tracked; refresh explicitly only when their source
+or export format changes:
+
+```sh
+python3 crates/sp-fidelity-oracle/tools/compile_presentation_oracle.py \
+  --dxc /path/to/dxc --spirv-cross /path/to/spirv-cross
+cargo test -p sp-fidelity-oracle --test presentation_pacing
+SP_FIDELITY_REQUIRE_GPU=1 cargo test -p sp-fidelity-oracle --test presentation_composition
+SP_FIDELITY_REQUIRE_GPU=1 cargo test -p sp-fidelity-wgpu --lib presentation
+```
+
+The pacing test needs a C++ compiler. The native composition oracle requires
+macOS/Metal and clang++; exported shaders were produced with DXC 3.7 and
+SPIRV-Cross from Vulkan SDK 1.4.357.1, targeting Metal 3.1. The windowed
+`fsr3_present` example exercises the actual surface separately from these
+headless GPU comparisons. Sources retain AMD's original license and pinned
+revision; see the core crate's conformance record for scope and differences.
