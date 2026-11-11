@@ -72,7 +72,8 @@ impl PresentFrame {
 }
 
 /// Presentation boundary. Initial configuration runs on the creating thread;
-/// later configuration and acquisition run on the presentation worker. The
+/// later configuration and generated-frame acquisition run on the presentation worker.
+/// Real-only default composition acquires/presents on the creating thread. The
 /// built-in target wraps a real wgpu surface; integrations may supply another.
 pub trait PresentationTarget: Send + 'static {
     fn configure(
@@ -192,6 +193,8 @@ pub struct FrameInterpolationSwapchain {
     fault: Arc<Mutex<Option<PresentationError>>>,
     reports: Vec<PresentationReport>,
     last_submission: Option<wgpu::SubmissionIndex>,
+    target: Arc<Mutex<Box<dyn PresentationTarget>>>,
+    debug_index: u32,
 }
 
 impl FrameInterpolationSwapchain {
@@ -227,6 +230,9 @@ impl FrameInterpolationSwapchain {
                 pace(pacer_device, receive, paced_send, pacer_stop, pacer_fault);
             })
             .map_err(|e| PresentationError::Gpu(e.to_string()))?;
+        let target: Arc<Mutex<Box<dyn PresentationTarget>>> =
+            Arc::new(Mutex::new(Box::new(target)));
+        let worker_target = target.clone();
         let present_device = device.clone();
         let present_queue = queue.clone();
         let present_stop = stop.clone();
@@ -237,7 +243,7 @@ impl FrameInterpolationSwapchain {
                 present_loop(
                     present_device,
                     present_queue,
-                    target,
+                    worker_target,
                     paced_receive,
                     present_stop,
                     present_fault,
@@ -273,6 +279,8 @@ impl FrameInterpolationSwapchain {
             fault,
             reports: Vec::new(),
             last_submission: None,
+            target,
+            debug_index: 0,
         })
     }
 
@@ -422,12 +430,66 @@ impl FrameInterpolationSwapchain {
             generation_error = Some(PresentationError::Gpu(e.to_string()));
             generated = None;
         }
-        let encoder = backend
+        drop(backend);
+        // Match the SDK's non-interpolated present: one composition into the
+        // acquired back buffer on the game queue. Acquire/drain before consuming
+        // the encoder so a surface failure still leaves the caller's list live.
+        if generated.is_none() {
+            self.reset = true;
+        }
+        let direct = if generated.is_none() && self.config.present_callback.is_none() {
+            if self.slots.iter().any(|slot| slot.pending.is_some()) {
+                self.wait_for_presents()?;
+            }
+            Some(self.target.lock().unwrap().acquire()?)
+        } else {
+            None
+        };
+        let mut backend = self.backend.borrow_mut();
+        let mut encoder = backend
             .ffx_take_command_list_wgpu(command_list)
             .ok_or(PresentationError::InvalidInput("invalid command list"))?;
         drop(backend);
-        let ready = self.queue.submit([encoder.finish()]);
-        self.last_submission = Some(ready.clone());
+        if let Some(acquired) = direct {
+            self.composition.encode(
+                &self.device,
+                &mut encoder,
+                color,
+                self.ui.as_ref(),
+                &acquired.texture,
+                self.ui_flags & UI_PREMULTIPLIED_ALPHA != 0,
+                self.config
+                    .draw_debug_pacing_lines
+                    .then_some(self.debug_index),
+            );
+            self.debug_index = (self.debug_index + 1) % 6;
+            self.last_submission = Some(self.queue.submit([encoder.finish()]));
+            let now = Instant::now();
+            (acquired.present)(
+                &self.queue,
+                PresentInfo {
+                    frame_id: self.config.frame_id,
+                    interpolated: false,
+                },
+            )?;
+            if self.reports.len() == self.slots.len() {
+                self.reports.remove(0);
+            }
+            self.reports.push(PresentationReport {
+                frame_id: self.config.frame_id,
+                present_calls: vec![now],
+                ..Default::default()
+            });
+            self.reset = true;
+            return generation_error.map_or(Ok(()), Err);
+        }
+        // A custom callback may fail after consuming its list. Preserve the
+        // caller's submitted-scene boundary even in that error case.
+        if self.config.present_callback.is_some() {
+            self.last_submission = Some(self.queue.submit([encoder.finish()]));
+            encoder = self.device.create_command_encoder(&Default::default());
+        }
+        let slot = &self.slots[self.next_slot];
         let has_generated = generated.is_some();
         let reset = self.reset;
         self.reset = !has_generated;
@@ -442,7 +504,6 @@ impl FrameInterpolationSwapchain {
         }
         for (i, (source, is_interpolated)) in sources.into_iter().enumerate() {
             let target = &slot.composed[i];
-            let mut encoder = self.device.create_command_encoder(&Default::default());
             if let Some(callback) = &self.config.present_callback {
                 let desc = {
                     let mut backend = self.backend.borrow_mut();
@@ -496,7 +557,6 @@ impl FrameInterpolationSwapchain {
                     None,
                 );
             }
-            self.last_submission = Some(self.queue.submit([encoder.finish()]));
             frames.push(Output {
                 texture: target.clone(),
                 info: PresentInfo {
@@ -505,6 +565,8 @@ impl FrameInterpolationSwapchain {
                 },
             });
         }
+        let ready = self.queue.submit([encoder.finish()]);
+        self.last_submission = Some(ready.clone());
         let (done, pending) = mpsc::channel();
         let job = Job {
             ready,
@@ -554,8 +616,11 @@ impl FrameInterpolationSwapchain {
         }
         // Composition can have been submitted even if a callback or surface
         // fails before a presentation job is acknowledged.
-        if let Some(index) = self.last_submission.take()
-            && let Err(e) = wait_gpu(&self.device, index, &self.stop)
+        // Retired workers have submitted their final surface copies, but no
+        // longer CPU-wait for them. A queue marker covers those reads as well
+        // as caller/composition work, including failed presentation attempts.
+        if self.last_submission.take().is_some()
+            && let Err(e) = wait_gpu(&self.device, self.queue.submit([]), &self.stop)
         {
             error.get_or_insert(e);
         }
@@ -563,6 +628,8 @@ impl FrameInterpolationSwapchain {
     }
     /// Drain the latest two retired reports. Older unread reports are replaced.
     pub fn take_reports(&mut self) -> Vec<PresentationReport> {
+        self.reports
+            .sort_by_key(|report| report.present_calls.last().copied());
         std::mem::take(&mut self.reports)
     }
     /// Drain acquisitions and GPU reads before reconfiguring the surface.
@@ -715,7 +782,7 @@ fn pace(
 fn present_loop(
     device: wgpu::Device,
     queue: wgpu::Queue,
-    mut target: impl PresentationTarget,
+    target: Arc<Mutex<Box<dyn PresentationTarget>>>,
     receive: mpsc::Receiver<Work>,
     stop: Arc<AtomicBool>,
     fault: Arc<Mutex<Option<PresentationError>>>,
@@ -726,7 +793,7 @@ fn present_loop(
     while let Ok(work) = receive.recv() {
         match work {
             Work::Configure(config, done) => {
-                let result = target.configure(&device, &config);
+                let result = target.lock().unwrap().configure(&device, &config);
                 previous = None;
                 let _ = done.send(result);
             }
@@ -739,7 +806,7 @@ fn present_loop(
                         if stop.load(Ordering::Acquire) {
                             return Err(PresentationError::WorkerStopped);
                         }
-                        let acquired = target.acquire()?;
+                        let acquired = target.lock().unwrap().acquire()?;
                         let mut encoder = device.create_command_encoder(&Default::default());
                         composition.encode(
                             &device,
@@ -753,8 +820,10 @@ fn present_loop(
                         if job.debug {
                             debug_index = (debug_index + 1) % 6;
                         }
-                        let index = queue.submit([encoder.finish()]);
-                        wait_gpu(&device, index, &stop)?;
+                        // Queue ordering guarantees the surface copy finishes
+                        // before presentation; CPU completion waits serialize
+                        // the single wgpu queue and can sit behind newer scenes.
+                        queue.submit([encoder.finish()]);
                         if let Some(previous) = previous {
                             wait_deadline(
                                 previous + job.report.pacing_interval,

@@ -299,11 +299,16 @@ fn failed_generation_presents_real_and_surface_error_can_be_reconfigured() {
     let list = backend
         .borrow_mut()
         .ffx_get_command_list_wgpu(device.create_command_encoder(&Default::default()));
-    presentation.present(list, &source).unwrap();
     assert!(matches!(
-        presentation.wait_for_presents(),
+        presentation.present(list, &source),
         Err(PresentationError::Surface("outdated"))
     ));
+    assert!(
+        backend
+            .borrow_mut()
+            .ffx_take_command_list_wgpu(list)
+            .is_some()
+    );
     *failure.lock().unwrap() = None;
     presentation.resize(&config()).unwrap();
     let list = backend
@@ -335,12 +340,16 @@ fn transient_surface_recovers_and_external_interpolation_uses_owner_callback() {
     let list = backend
         .borrow_mut()
         .ffx_get_command_list_wgpu(device.create_command_encoder(&Default::default()));
-    presentation.present(list, &source).unwrap();
     assert!(matches!(
-        presentation.wait_for_presents(),
+        presentation.present(list, &source),
         Err(PresentationError::Surface("occluded"))
     ));
     *failure.lock().unwrap() = None;
+    // Failed acquisition did not consume the live encoder: retry it, then
+    // observe the real target's pixels before changing generation mode.
+    presentation.present(list, &source).unwrap();
+    assert_eq!(&observed.lock().unwrap()[0].1[..4], [255, 0, 0, 255]);
+    observed.lock().unwrap().clear();
     let owner = std::thread::current().id();
     let weak = Rc::downgrade(&backend);
     let callback: FfxPresentCallbackFunc = Rc::new(move |desc| {
@@ -429,4 +438,81 @@ fn external_interpolation_without_copy_source_usage_is_presented() {
     for pixel in actual[0].1.chunks_exact(4) {
         assert_eq!(pixel, [13, 29, 47, 61]);
     }
+}
+
+#[test]
+fn failed_generation_and_failed_fallback_reset_the_next_dispatch() {
+    let Some((device, queue)) = gpu() else { return };
+    let (backend, _) = ffx_get_interface_wgpu(&device);
+    let failure = Arc::new(Mutex::new(None));
+    let target = Target {
+        device: device.clone(),
+        observed: Arc::default(),
+        first: None,
+        failure: failure.clone(),
+    };
+    let mut presentation =
+        FrameInterpolationSwapchain::new(backend.clone(), &queue, target, &config()).unwrap();
+    let source = texture(&device, wgpu::TextureUsages::empty());
+    let resets = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let calls = resets.clone();
+    let weak = Rc::downgrade(&backend);
+    let callback: FfxFrameGenerationDispatchFunc = Rc::new(move |desc| {
+        calls.borrow_mut().push(desc.reset);
+        if desc.frame_id == 1 {
+            return Err(sp_fidelity::error::FFX_ERROR_INVALID_ARGUMENT);
+        }
+        let backend = weak.upgrade().unwrap();
+        let mut backend = backend.borrow_mut();
+        let output = backend.ffx_texture_wgpu(&desc.outputs[0]).unwrap();
+        let view = output.create_view(&Default::default());
+        let encoder = backend.ffx_command_encoder_wgpu(desc.command_list).unwrap();
+        let _pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::GREEN),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        Ok(())
+    });
+    for frame_id in 0..3 {
+        presentation
+            .configure_frame_generation(&FfxFrameGenerationConfig {
+                frame_generation_enabled: true,
+                frame_generation_callback: Some(callback.clone()),
+                frame_id,
+                ..Default::default()
+            })
+            .unwrap();
+        *failure.lock().unwrap() = (frame_id == 1).then_some("occluded");
+        let list = backend
+            .borrow_mut()
+            .ffx_get_command_list_wgpu(device.create_command_encoder(&Default::default()));
+        let result = presentation.present(list, &source);
+        if frame_id == 1 {
+            assert!(matches!(
+                result,
+                Err(PresentationError::Surface("occluded"))
+            ));
+            assert!(
+                backend
+                    .borrow_mut()
+                    .ffx_take_command_list_wgpu(list)
+                    .is_some()
+            );
+        } else {
+            result.unwrap();
+            presentation.wait_for_presents().unwrap();
+        }
+    }
+    // The uninterrupted dispatch keeps history; after the failed generated
+    // frame and failed real fallback, the next dispatch must reset it.
+    assert_eq!(&*resets.borrow(), &[true, false, true]);
+    presentation.shutdown().unwrap();
 }

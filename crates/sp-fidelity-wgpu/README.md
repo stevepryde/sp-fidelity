@@ -105,7 +105,10 @@ backbuffer transfer function and let the application handle presentation.
 `presentation::FrameInterpolationSwapchain` ports the SDK's presentation
 behavior using its game-queue composition mode. It calls generation and custom
 composition on the creating thread, observes GPU completion on a pacing thread,
-and acquires/presents on a separate worker. The application retains its window
+and acquires/presents generated pairs on a separate worker. Default real-only
+composition goes directly into the acquired surface on the creating thread,
+with one submission and no CPU wait for GPU completion. Generated pairs use
+queue ordering for surface copies and retain completion-based pacing. The application retains its window
 and event loop. See [PRESENTATION.md](../../PRESENTATION.md) for the contract.
 
 ```rust,ignore
@@ -169,8 +172,8 @@ keep it running. The finite run fails if no surface presentation completes
   recording completion and actual presentation-call times. These are not
   scanout timestamps or measured display FPS.
 - Surface `occluded`/`timeout` errors retire the affected frame and allow a
-  later retry; `lost`/`outdated` require `resize` to reconfigure. Errors arrive
-  when a slot is reused or when `wait_for_presents` drains it. An error before
+  later retry; `lost`/`outdated` require `resize` to reconfigure. Real-only acquisition errors return immediately, leaving the input list live.
+  Worker errors arrive when a slot is reused or when `wait_for_presents` drains it. An error before
   input consumption leaves the command list live; on error, take it if still
   present and submit or discard it. A consumed list returns `None`. Drain
   pending work before destroying SDK contexts. `shutdown` joins both workers;
@@ -178,7 +181,8 @@ keep it running. The finite run fails if no surface presentation completes
 
 `PresentationTarget` is the presentation boundary for other native integrations.
 Its initial `configure` runs during construction; later configuration and
-acquisition run on the presenter worker. A `PresentFrame` owns the acquired
+generated-pair acquisition run on the presenter worker. Default real-only
+acquisition/presentation run on the creating thread. A `PresentFrame` owns the acquired
 texture and its one-shot presentation operation. `SurfaceTarget` implements
 this for a real surface. There is no windowing dependency in the runtime;
 winit is used only by the example. The threaded adapter is unavailable on

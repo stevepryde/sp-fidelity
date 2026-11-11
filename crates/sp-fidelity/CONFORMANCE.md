@@ -405,7 +405,13 @@ Required Rust/wgpu adaptations:
   and contexts on their owner thread. Two bounded output slots hold prepared
   images; owned wgpu textures cross threads, never transient SDK handles.
   A completion worker waits for the interpolation submission and a separate
-  presenter worker acquires/copies/waits/presents. Both UI registration modes
+  presenter worker acquires/copies/presents. Default real-only output uses
+  the SDK non-interpolated game-queue path: acquire, compose once directly
+  into the surface in the caller encoder, submit, present. It skips workers
+  and intermediate copies. Generated-frame default composition is recorded
+  with the caller work in one submission. wgpu queue ordering replaces a CPU
+  wait after each surface copy; draining joins workers then waits for a queue
+  marker covering their reads before resource destruction. Both UI registration modes
   submit input reads before returning; no additional UI snapshot is necessary.
 - wgpu exposes one queue. Async compute/present queue selection, priorities,
   native semaphores, DXGI/Vulkan swapchain interception, exclusive fullscreen,

@@ -17,12 +17,14 @@ The consumer owns its window and event loop and supplies its surface.
 3. Default composition copies unmodified color when no UI is registered. With
    UI it uses AMD's integer texel loads and straight/premultiplied alpha formulas.
    Custom callbacks and debug pacing indicators are supported. UI composition
-   also runs while generation is disabled.
+   also runs while generation is disabled: default composition writes directly
+   to an acquired surface in the caller submission, without worker scheduling.
 4. SDK contexts and callbacks stay on their creating thread. Owned prepared
    textures cross to workers; transient SDK handles never do. Source reads are
    submitted before returning source ownership to the consumer. Pending work
    and retained output allocations are bounded and slots are not reused before
-   the presentation worker has finished reading them.
+   the presentation worker has submitted its reads on the shared queue. Queue
+   ordering protects subsequent reuse; explicit drains wait for GPU completion.
 5. Configuration changes that affect callbacks or generation, resize, and
    shutdown drain pending work. Surface acquisition and device errors retire
    work and reach the consumer. Shutdown joins workers, including error paths.
