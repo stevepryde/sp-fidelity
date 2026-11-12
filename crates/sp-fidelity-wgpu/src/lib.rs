@@ -26,12 +26,14 @@
 //! `Rgba32Float` (Metal has no read-write `Rg32Float` storage texture) and a
 //! storage buffer backing a texture that a pipeline binds as a buffer (WGSL
 //! texture atomics return nothing; see `FfxWgpuBackend::back_buffer_bindings`)
-//! and a job that fails before recording its new views or bind group when
+//! and the two-dispatch FI SPD handoff (SDK-P14), plus a job that fails
+//! before recording its new views or bind group when
 //! wgpu rejects one, stopping the jobs after it (SDK-P28: wgpu would
 //! invalidate the caller's whole encoder; see
 //! [`FfxWgpuBackend::take_job_error`]). Nothing else differs from the SDK.
 use sp_fidelity::blob_accessors::ffx_get_permutation_blob_by_index;
 use sp_fidelity::error::*;
+use sp_fidelity::frameinterpolation::FfxFrameInterpolationPass;
 use sp_fidelity::interface::*;
 use sp_fidelity::shaders::*;
 use sp_fidelity::types::*;
@@ -190,6 +192,7 @@ struct Pipeline {
     pass: FfxPass,
     pipeline: wgpu::ComputePipeline,
     output_source: Option<String>,
+    spd_epilogue: Option<wgpu::ComputePipeline>,
     layout: wgpu::BindGroupLayout,
     /// Layout entries by WGSL binding.
     entries: HashMap<u32, wgpu::BindGroupLayoutEntry>,
@@ -265,8 +268,9 @@ pub struct FfxWgpuBackend {
     frame_generation_configurator: Option<FfxWgpuFrameGenerationConfigurator>,
 }
 
-/// Timestamp query pairs for the compute passes `execute_gpu_jobs` begins, in
-/// order from `first`; passes beyond `count` pairs are untimed. The SDK's
+/// Timestamp query pairs for logical compute jobs in `execute_gpu_jobs`, in
+/// order from `first`; jobs beyond `count` pairs are untimed. A split SPD job's
+/// pair spans both physical passes. The SDK's
 /// backends have no pass timing; this lets the application time its dispatch.
 pub struct FfxWgpuPassTimestamps {
     pub query_set: wgpu::QuerySet,
@@ -1076,14 +1080,46 @@ impl FfxWgpuBackend {
             pass.set_bind_group(1, grid_group, &[]);
             pass.dispatch_workgroups_indirect(&self.grid.arguments, 0);
         } else {
+            let epilogue = pipeline.spd_epilogue.as_ref().filter(|_| {
+                state
+                    .constant_buffer_bindings
+                    .iter()
+                    .zip(&job.cbs)
+                    .any(|(binding, cb)| binding.name == "cbInpaintingPyramid" && cb.data[0] > 6)
+            });
+            let mut timestamps = self.timestamp_writes();
+            let epilogue_timestamps = if epilogue.is_some() {
+                timestamps
+                    .as_mut()
+                    .map(|writes| wgpu::ComputePassTimestampWrites {
+                        query_set: writes.query_set,
+                        beginning_of_pass_write_index: None,
+                        end_of_pass_write_index: writes.end_of_pass_write_index.take(),
+                    })
+            } else {
+                None
+            };
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some(&state.name),
-                timestamp_writes: self.timestamp_writes(),
+                timestamp_writes: timestamps,
             });
             pass.set_pipeline(&pipeline.pipeline);
             pass.set_bind_group(0, &group, &[]);
             let [x, y, z] = job.dimensions;
             pass.dispatch_workgroups(x, y, z);
+            drop(pass);
+            if let Some(epilogue) = epilogue {
+                // WGSL has no device-wide acquire/release equivalent for AMD's
+                // globallycoherent mip-5 handoff. Separate passes publish all
+                // tile writes before the unchanged SPD tail reads them.
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("FidelityFX SPD epilogue"),
+                    timestamp_writes: epilogue_timestamps,
+                });
+                pass.set_pipeline(epilogue);
+                pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(1, 1, z);
+            }
         }
         Ok(())
     }
@@ -1177,6 +1213,7 @@ impl FfxWgpuBackend {
             layout,
             entries,
             output_source: None,
+            spd_epilogue: None,
             constant_sizes: original.constant_sizes.clone(),
             constants: original.constants.clone(),
             samplers: original.samplers.clone(),
@@ -2015,6 +2052,9 @@ impl FfxInterface for FfxWgpuBackend {
                     .into(),
                 ),
             });
+        let split_spd = effect == FfxEffect::FrameInterpolation
+            && (pass == FfxFrameInterpolationPass::InpaintingPyramid as u32
+                || pass == FfxFrameInterpolationPass::GameVectorFieldInpaintingPyramid as u32);
         let pipeline = self
             .device
             .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -2022,9 +2062,26 @@ impl FfxInterface for FfxWgpuBackend {
                 layout: Some(&pipeline_layout),
                 module: &module,
                 entry_point: Some(FFX_WGSL_ENTRY_POINT),
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: if split_spd { &[("spdPhase", 1.0)] } else { &[] },
+                    ..Default::default()
+                },
                 cache: None,
             });
+        let spd_epilogue = split_spd.then(|| {
+            self.device
+                .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                    label: Some("FidelityFX SPD epilogue"),
+                    layout: Some(&pipeline_layout),
+                    module: &module,
+                    entry_point: Some(FFX_WGSL_ENTRY_POINT),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &[("spdPhase", 2.0)],
+                        ..Default::default()
+                    },
+                    cache: None,
+                })
+        });
         // Static samplers: register sN is the description's Nth sampler.
         let samplers = blob
             .bound_samplers
@@ -2072,6 +2129,7 @@ impl FfxInterface for FfxWgpuBackend {
             pass,
             pipeline,
             output_source,
+            spd_epilogue,
             layout,
             entries,
             constant_sizes,

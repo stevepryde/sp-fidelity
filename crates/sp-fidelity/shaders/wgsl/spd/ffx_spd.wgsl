@@ -28,6 +28,9 @@
 //                                                     NON-PACKED VERSION
 //==============================================================================================================================
 #if defined(FFX_GPU)
+// Backend scheduling adaptation: 0 preserves the SDK dispatch, 1 computes
+// independent tiles, 2 completes the same reduction after a dispatch barrier.
+override spdPhase: u32 = 0u;
 #if defined(FFX_SPD_PACKED_ONLY)
 // Avoid compiler errors by including default implementations of these callbacks.
 fn SpdLoadSourceImage(p: FfxInt32x2, slice: FfxUInt32) -> FfxFloat32x4
@@ -439,18 +442,20 @@ fn SpdDownsample_u32x2_u32_u32_u32_u32(workGroupID: FfxUInt32x2, localInvocation
     let sub_xy: FfxUInt32x2 = ffxRemapForWaveReduction(localInvocationIndex % 64u);
     let x: FfxUInt32      = sub_xy.x + 8u * ((localInvocationIndex >> 6u) % 2u);
     let y: FfxUInt32      = sub_xy.y + 8u * ((localInvocationIndex >> 7u));
-    SpdDownsampleMips_0_1(x, y, workGroupID, localInvocationIndex, mips, slice);
+    if (spdPhase != 2u) {
+        SpdDownsampleMips_0_1(x, y, workGroupID, localInvocationIndex, mips, slice);
 
-    // compute MIP level 2, 3, 4, 5
-    SpdDownsampleNextFour(x, y, workGroupID, localInvocationIndex, 2u, mips, slice);
+        // compute MIP level 2, 3, 4, 5
+        SpdDownsampleNextFour(x, y, workGroupID, localInvocationIndex, 2u, mips, slice);
+    }
 
-    if (mips <= 6u) {
+    if (mips <= 6u || spdPhase == 1u) {
         return;
     }
 
     // increase the global atomic counter for the given slice and check if it's the last remaining thread group:
     // terminate if not, continue if yes.
-    if (SpdExitWorkgroup(numWorkGroups, localInvocationIndex, slice)) {
+    if (spdPhase == 0u && SpdExitWorkgroup(numWorkGroups, localInvocationIndex, slice)) {
         return;
     }
 

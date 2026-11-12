@@ -69,6 +69,7 @@ fn buffer_backed_atomic_texture_preserves_every_add_across_registrations() {
         pass: 0,
         pipeline,
         output_source: None,
+        spd_epilogue: None,
         layout,
         entries: HashMap::from([(64, entry)]),
         constant_sizes: HashMap::new(),

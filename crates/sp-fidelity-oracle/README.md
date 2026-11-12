@@ -106,6 +106,14 @@ cargo test -p sp-fidelity-oracle --release -- --ignored --nocapture
 
 Captures, traces and reports go to `target/gpu-oracle/<case>-run-<time>`.
 
+The full-resolution FI test uses original HLSL with serialized tile scheduling
+for SPD: each tile runs through AMD's existing workgroup-offset parameter, with
+its original atomic counter and total group count. The last tile computes the
+unchanged upper mip chain after preceding writes complete. The entire sequence
+carries its own history and compares exactly. This is a synchronization control
+for the Metal translation, not execution of AMD's supported DX12/Vulkan pipeline;
+the original parallel replay remains separate.
+
 ## Pass tests before the host
 
 `src/pass.rs` runs one pass without an effect host: the port's WGSL for a

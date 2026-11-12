@@ -158,18 +158,18 @@ snapshots themselves agree. Single-workgroup controls isolate this boundary.
 
 Frame interpolation exercises all eight meaningful shader keys over sixteen
 prepared/interpolated frames each, plus 8×8, 32×32, and 64×64 controls.
-The controls compare every captured output exactly in both identical-input
-replay and independent history. Across all eleven cases, identical-input
-replay produced 4,934 exact dumps and 194 SDK-P14 mip-6 differences;
-independent history produced 4,917 exact dumps, 195 direct SDK-P14 differences,
-and 16 unchanged mip-6 values inherited from a prior racy dispatch.
+These retain the original parallel Metal replay and its narrowly identified
+SDK-P14 comparison limitation; they do not establish full-resolution fidelity.
 
-These exceptions are restricted to the single mip-6 texel of the two FI SPD
-pyramids. The original trace must establish a multi-workgroup epilogue and
-mip 5 must compare exactly. An inherited value must match that side's last
-actual writer, with the port's pre/post-job bytes unchanged. No general
-floating-point tolerance is used. The original SPD publication issue is
-retained rather than changing the algorithm; see SDK-P14 below.
+A separate 1200×750 sequence captures every mip and compares against original
+HLSL with serialized tile scheduling: each original SPD tile runs once through
+AMD's existing workgroup offset, with the original counter and workgroup count.
+The native oracle completes each tile before the next; only the final tile
+executes the unchanged upper-mip reduction. All other jobs, application inputs,
+and temporal histories follow the original C++ trace. This avoids importing
+port intermediates or duplicating AMD's reduction arithmetic. The 568 output
+dumps match exactly, with no tolerance or exception. This validates the WGSL
+backend's dispatch split, not AMD's complete supported DX12/Vulkan pipeline.
 
 Optical flow exercises two 24-frame sequences, including odd dimensions,
 Texture1D allocation, all three transfer functions, resets, and nonzero
@@ -309,11 +309,28 @@ Adaptation IDs are stable and may have gaps.
 
 ### SDK-P14 — SPD hand-off between workgroups
 
-`ffx_spd.h:132–144` hands off between workgroups with an atomic and a
-group-shared barrier only; the texture is not necessarily `globallycoherent`,
-and HLSL `InterlockedAdd` is not a memory fence. Publication between
-workgroups is therefore not guaranteed by the SDK itself, and a stale read in
-the WGSL is original behaviour.
+Frame interpolation marks its mip-5 UAV and counter `globallycoherent`
+(`ffx_frameinterpolation_callbacks_hlsl.h`). WGSL atomics have relaxed memory
+semantics and its barriers are workgroup-scoped; the port's original one-dispatch
+handoff therefore did not preserve cross-workgroup texture publication. The
+wgpu backend now runs FI's two SPD pyramids as tile and epilogue dispatches,
+with a compute-pass boundary between them. It preserves the SDK reduction tree,
+FP32 arithmetic, intermediate texture precision, mip count and scratch state.
+Small pyramids that need no epilogue retain one dispatch. One timestamp pair
+spans each original logical job.
+
+The original HLSL translated by DXC/SPIRV-Cross to Metal also exhibits stale
+reads at this boundary. At 1200×750, an original mip-6 texel was zero although
+all four completed mip-5 inputs were the same nonzero vector. This is a
+limitation of that comparison path, not proof of an AMD supported-backend bug.
+Serialized original-HLSL tile execution removes the ambiguity and matches the
+split WGSL sequence exactly. The default `spdPhase = 0` retains the original
+shader scheduling for other effects and direct shader diagnostics; the wgpu
+backend selects phases 1/2 only for FI's FP32 pyramid passes.
+
+Earlier acceptance of stale reads as necessarily "original behaviour" was
+not justified. The remaining FSR2/FSR3 upscaler observations below identify
+unresolved platform boundaries; they must not be generalized to upstream bugs.
 
 In FSR2 the difference appears only in `FSR2_AutoExposure`, when the
 luminance pyramid runs SPD's epilogue (more than six mips) and mip 5 was

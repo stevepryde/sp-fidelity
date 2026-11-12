@@ -64,6 +64,14 @@ synchronize their original textures so subsequent effects and caller reads
 see their writes. Frame interpolation specializes output pipelines from the
 actual bound output texture format and caches each format variant.
 
+FI's inpainting pyramids complete their tile writes before their upper-mip
+reduction in a second compute pass. WGSL cannot express the SDK's globally
+coherent cross-workgroup handoff. This scheduling adaptation preserves AMD's
+reduction arithmetic and intermediate precision; no application changes are
+needed. Timestamp pairs span both passes. See SDK-P14 in
+[CONFORMANCE.md](../sp-fidelity/CONFORMANCE.md) for the exact original-HLSL
+comparison and its platform limits.
+
 Each pipeline keeps the bind groups of the last two resource sets its jobs
 bound (FSR2 alternates two by frame) and its own uniform buffers, into which
 each job's constants are copied from one upload buffer per

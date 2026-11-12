@@ -43,10 +43,10 @@ fn compare_outputs(
             && difference.mip == 6
             && difference.size == [1, 1]
         {
-            // SDK-P14: mip5 is published across workgroups by an atomic but no
-            // dispatch-wide image fence. The native HLSL adds texture fences;
-            // WGSL has only its workgroup barrier. The three one-group controls
-            // remain exact; this exception also requires exact mip5 inputs.
+            // SDK-P14: the parallel native Metal translation can read mip5
+            // before publication. This historical comparison is not proof of
+            // the backend split; the full-resolution serialized-HLSL control
+            // below admits no differences. One-group controls remain exact.
             let previous = difference
                 .path
                 .parent()
@@ -93,7 +93,7 @@ fn compare_outputs(
     })
 }
 
-fn run(flags: u32, render: [u32; 2], display: [u32; 2]) -> bool {
+fn run(flags: u32, render: [u32; 2], display: [u32; 2], serialize_spd: bool) -> bool {
     let gpu = gpu::Gpu::new(false, None);
     let vector = display.map(|n: u32| n.div_ceil(8));
     let directory = gpu::case_directory(&format!(
@@ -343,6 +343,55 @@ fn run(flags: u32, render: [u32; 2], display: [u32; 2]) -> bool {
     for (name, bytes) in init {
         fs::write(directory.join("inputs").join(format!("{name}.bin")), bytes).unwrap();
     }
+    if serialize_spd {
+        // The original HLSL's Metal translation does not guarantee publication
+        // between workgroups. Serialize its original tiles through the existing
+        // WorkGroupOffset API. Only the final tile executes AMD's unchanged tail;
+        // no port intermediates are imported into this independent sequence.
+        let serial = directory.join("serialized-original");
+        gpu::link_case(&directory, &serial, &["inputs", "wgpu"]);
+        let mut trace = String::new();
+        for event in &events {
+            if event[0] == "compute" && matches!(event[1].as_u64(), Some(7 | 9)) {
+                let cb_index = event[6]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .position(|cb| cb[0] == "cbInpaintingPyramid")
+                    .unwrap();
+                if event[6][cb_index][1][0].as_u64().unwrap() > 6 {
+                    assert_eq!(event[2][2], 1, "FI pyramids are two-dimensional");
+                    for y in 0..event[2][1].as_u64().unwrap() {
+                        for x in 0..event[2][0].as_u64().unwrap() {
+                            let mut tile = event.clone();
+                            tile[2] = serde_json::json!([1, 1, 1]);
+                            tile[6][cb_index][1][2] =
+                                (event[6][cb_index][1][2].as_u64().unwrap() + x).into();
+                            tile[6][cb_index][1][3] =
+                                (event[6][cb_index][1][3].as_u64().unwrap() + y).into();
+                            trace.push_str(&serde_json::to_string(&tile).unwrap());
+                            trace.push('\n');
+                        }
+                    }
+                    continue;
+                }
+            }
+            trace.push_str(&serde_json::to_string(event).unwrap());
+            trace.push('\n');
+        }
+        fs::write(serial.join("cpp.jsonl"), trace).unwrap();
+        let comparison = compare::compare(
+            &gpu::run_sequence(&serial, &FRAMEINTERPOLATION),
+            FRAMEINTERPOLATION.stages,
+            &|_| Err("output must match serialized original HLSL exactly".into()),
+        );
+        println!(
+            "{} original HLSL with serialized tile scheduling: {}",
+            directory.display(),
+            comparison.summary()
+        );
+        return comparison.accepted();
+    }
     let mut boundary = SpdBoundary::default();
     let mut frame = 0;
     let mut last_mip6_writer = None;
@@ -399,17 +448,35 @@ fn frameinterpolation_full_sequence_matches_original_hlsl() {
     // The smaller controls also exercise fixed UAV slots beyond allocation.
     let mut accepted = true;
     for (render, display) in [([6, 6], [8, 8]), ([24, 24], [32, 32]), ([48, 48], [64, 64])] {
-        accepted &= run(FFX_FRAMEINTERPOLATION_ENABLE_ASYNC_SUPPORT, render, display);
+        accepted &= run(
+            FFX_FRAMEINTERPOLATION_ENABLE_ASYNC_SUPPORT,
+            render,
+            display,
+            false,
+        );
     }
     for key in 0..8 {
         let flags = (key & 1)
             | ((key & 2) << 3)
             | ((key & 4) << 3)
             | FFX_FRAMEINTERPOLATION_ENABLE_ASYNC_SUPPORT;
-        accepted &= run(flags, [128, 96], [192, 128]);
+        accepted &= run(flags, [128, 96], [192, 128], false);
     }
     assert!(
         accepted,
         "one or more FI replay/history comparisons differ; see summaries above"
     );
+}
+
+#[test]
+#[ignore = "requires Metal and compiled DXC variants; captures full-resolution mip chains"]
+fn frameinterpolation_game_resolution_matches_serialized_original_hlsl() {
+    assert!(run(
+        FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INVERTED
+            | FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INFINITE
+            | FFX_FRAMEINTERPOLATION_ENABLE_ASYNC_SUPPORT,
+        [1200, 750],
+        [1200, 750],
+        true,
+    ));
 }
