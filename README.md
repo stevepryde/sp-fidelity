@@ -5,12 +5,10 @@
 [![sp-fidelity-wgpu on crates.io](https://img.shields.io/crates/v/sp-fidelity-wgpu.svg?label=sp-fidelity-wgpu)](https://crates.io/crates/sp-fidelity-wgpu)
 [![sp-fidelity-wgpu docs](https://docs.rs/sp-fidelity-wgpu/badge.svg)](https://docs.rs/sp-fidelity-wgpu)
 
-A standalone, unofficial Rust and WGSL port of the FSR2 and FSR3.1.4 C++ and HLSL
+A standalone, unofficial 1:1 Rust and WGSL port of the FSR2 and FSR3.1.4 C++ and HLSL
 source in [AMD FidelityFX SDK 1.1.4](crates/sp-fidelity/vendor/sdk-1.1.4/source-revision.txt),
 produced entirely using AI coding agents, with a wgpu backend.
-Not affiliated with, endorsed by, or supported by AMD. Original algorithms are
-retained with documented platform adaptations and an optional
-[camera-supported outgoing-edge extension](crates/sp-fidelity/README.md#optional-camera-supported-outgoing-edges).
+Not affiliated with, endorsed by, or supported by AMD.
 
 ## Features
 

@@ -209,9 +209,23 @@ pub fn words(
             ]
             .map(f32::to_bits),
         );
-        // Explicit unchanged-AMD mode. Camera-supported outgoing geometry is
-        // exercised separately with physically consistent analytic scenes.
-        words.extend([0; 12]);
+        words.extend(
+            [
+                i as f32 * 0.1,
+                0.5,
+                -2.0,
+                0.0,
+                1.0,
+                0.0,
+                1.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                1.0,
+            ]
+            .map(f32::to_bits),
+        );
         let debug = match i % 7 {
             3 => FFX_FRAMEINTERPOLATION_DISPATCH_DRAW_DEBUG_VIEW,
             4 => 3,

@@ -122,22 +122,8 @@ fn computeInterpolatedColor(iPxPos: FfxUInt32x2, fInterpolatedColor: ptr<functio
         t += 0.5f * (1 - (fDisocclusionFactor.x));
         t -= 0.5f * (1 - (fDisocclusionFactor.y));
         // Say if fDisocclusionFactor.x is 1 and fDisocclusionFactor.y = 0, then t will be 0. (*fInterpolatedColor) will be entirely from fPrevColorGame
-        var sourceWeights = fDisocclusionFactor;
-        if (cbFI.Mode == 1) {
-            // Feather the two ALIGNED source images over their geometric
-            // overlap. The support length is their full displacement, with a
-            // one-render-pixel floor; visibility rejection remains binary.
-            let extent = max(abs(gameMv.fMotionVector * 2.0), 1.0 / FfxFloat32x2(RenderSize()));
-            let previousUv = fUvInInterpolationRect + gameMv.fMotionVector;
-            let currentUv = fUvInInterpolationRect - gameMv.fMotionVector;
-            let previousSupport = clamp(min(previousUv, 1.0 - previousUv) / extent, FfxFloat32x2(0.0), FfxFloat32x2(1.0));
-            let currentSupport = clamp(min(currentUv, 1.0 - currentUv) / extent, FfxFloat32x2(0.0), FfxFloat32x2(1.0));
-            sourceWeights *= FfxFloat32x2(min(previousSupport.x, previousSupport.y), min(currentSupport.x, currentSupport.y));
-            let total = sourceWeights.x + sourceWeights.y;
-            if (total > 0.0) { t = sourceWeights.y / total; }
-        }
         (*fInterpolatedColor) = mix(fPrevColorGame.fRaw, fCurrColorGame.fRaw, ffxSaturate_f32(t));
-        fDisoccludedFactor = ffxSaturate_f32(1 - min(sourceWeights.x, sourceWeights.y));
+        fDisoccludedFactor = ffxSaturate_f32(1 - min(fDisocclusionFactor.x, fDisocclusionFactor.y));
 
         if (fPrevColorGame.fBilinearWeightSum == 0.0f)
         {

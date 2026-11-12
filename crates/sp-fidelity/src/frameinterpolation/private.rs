@@ -128,7 +128,6 @@ pub struct FfxFrameInterpolationContextPrivate {
     pub async_supported: bool,
     pub previous_frame_id: u64,
     pub dispatch_count: u64,
-    pub(super) edge: super::edge::EdgeHistory,
 }
 impl FfxFrameInterpolationContextPrivate {
     pub fn zeroed(context_description: FfxFrameInterpolationContextDescription) -> Self {
@@ -159,7 +158,6 @@ impl FfxFrameInterpolationContextPrivate {
             async_supported: Default::default(),
             previous_frame_id: Default::default(),
             dispatch_count: Default::default(),
-            edge: Default::default(),
         }
     }
 }

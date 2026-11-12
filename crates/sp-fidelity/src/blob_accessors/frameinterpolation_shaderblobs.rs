@@ -1,11 +1,10 @@
 //! Port of `ffx_frameinterpolation_shaderblobs.{h,cpp}` (FidelityFX SDK 1.1.4).
 //!
-//! Original SDK binding tables come from DXC 1.9.0.5399 SPIR-V reflection of every
+//! Binding tables come from DXC 1.9.0.5399 SPIR-V reflection of every
 //! vendored HLSL permutation, exported by `compile_dxc_oracle.py` and
 //! SPIRV-Cross 1.4.357.0. All 3-bit keys share each pass's binding table.
 //! The SDK's accessors select only FP32 tables, including when ALLOW_FP16 is
 //! set. Wave64 tables retain the same bindings and a distinct wave identity.
-//! The optional outgoing-geometry extension has its own WGSL binding table.
 use super::binding;
 use crate::assert::ffx_assert_fail;
 use crate::error::*;
@@ -238,42 +237,6 @@ const FRAMEINTERPOLATION_DEBUG_VIEW_PERMUTATION_INFO: PermutationInfo = Permutat
     sampler: &[binding("s_LinearClamp", 0, 1, 0)],
 };
 
-// Port extension; the original AMD pass tables remain unchanged.
-const FRAMEINTERPOLATION_OUTGOING_GEOMETRY: PermutationInfo = PermutationInfo {
-    cbv: &[binding("cbFI", 0, 1, 0), binding("cbEdge", 1, 1, 0)],
-    srv_texture: &[
-        binding("r_edge_previous_depth", 0, 1, 0),
-        binding("r_edge_previous_motion", 1, 1, 0),
-    ],
-    uav_texture: &[
-        binding("rw_game_motion_vector_field_x", 0, 1, 0),
-        binding("rw_game_motion_vector_field_y", 1, 1, 0),
-        binding("rw_reconstructed_depth_interpolated_frame", 2, 1, 0),
-    ],
-    srv_buffer: &[],
-    uav_buffer: &[],
-    sampler: &[],
-};
-
-const FRAMEINTERPOLATION_CAMERA_VISIBILITY: PermutationInfo = PermutationInfo {
-    cbv: &[binding("cbFI", 0, 1, 0), binding("cbEdge", 1, 1, 0)],
-    srv_texture: &[
-        binding("r_dilated_depth", 3, 1, 0),
-        binding("r_reconstructed_depth_previous_frame", 2, 1, 0),
-        binding("r_reconstructed_depth_interpolated_frame", 4, 1, 0),
-        binding("r_game_motion_vector_field_x", 0, 1, 0),
-        binding("r_game_motion_vector_field_y", 1, 1, 0),
-        binding("r_inpainting_pyramid", 5, 1, 0),
-        binding("r_input_distortion_field", 6, 1, 0),
-        binding("r_edge_previous_depth", 7, 1, 0),
-        binding("r_edge_previous_motion", 8, 1, 0),
-    ],
-    uav_texture: &[binding("rw_disocclusion_mask", 0, 1, 0)],
-    srv_buffer: &[],
-    uav_buffer: &[],
-    sampler: &[binding("s_LinearClamp", 0, 1, 0)],
-};
-
 const PERMUTATION_KEY_OPTIONS: &[&str] = &[
     "FFX_FRAMEINTERPOLATION_OPTION_LOW_RES_MOTION_VECTORS",
     "FFX_FRAMEINTERPOLATION_OPTION_JITTER_MOTION_VECTORS",
@@ -368,14 +331,6 @@ pub fn frame_interpolation_get_permutation_blob_by_index(
         id if id == FfxFrameInterpolationPass::DebugView as FfxPass => (
             "ffx_frameinterpolation_debug_view_pass",
             &FRAMEINTERPOLATION_DEBUG_VIEW_PERMUTATION_INFO,
-        ),
-        id if id == FfxFrameInterpolationPass::ReconstructOutgoingGeometry as FfxPass => (
-            "ffx_frameinterpolation_reconstruct_outgoing_geometry_pass",
-            &FRAMEINTERPOLATION_OUTGOING_GEOMETRY,
-        ),
-        id if id == FfxFrameInterpolationPass::DisocclusionWithCameraVisibility as FfxPass => (
-            "ffx_frameinterpolation_disocclusion_camera_pass",
-            &FRAMEINTERPOLATION_CAMERA_VISIBILITY,
         ),
         _ => {
             ffx_assert_fail!("Should never reach here.");
