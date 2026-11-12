@@ -142,6 +142,11 @@ fn computeDisocclusionMask(iPxPos: FfxInt32x2)
     let iSamplePosCurrent: FfxInt32x2 = FfxInt32x2((fDepthUv - fSrcMotionVector) * FfxFloat32x2(RenderSize()));
     fDisocclusionMask.y = ffxSaturate_f32(fDisocclusionMask.y + FfxFloat32(!IsOnScreen(iSamplePosCurrent, RenderSize())));
 
+#if defined(FFX_FRAMEINTERPOLATION_EDGE_VISIBILITY)
+    // Camera-supported extension only clears visibility; the unchanged SDK
+    // pass and dynamic current-primary decisions remain authoritative otherwise.
+    fDisocclusionMask.x *= EdgePreviousVisibility(fDepthUv, gameMv, fDilatedDepth);
+#endif
     StoreDisocclusionMask(iPxPos, fDisocclusionMask);
 
 }

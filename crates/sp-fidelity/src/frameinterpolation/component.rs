@@ -704,6 +704,9 @@ pub fn ffx_frame_interpolation_context_destroy(
 ) -> Result<(), FfxErrorCode> {
     let mut context = context.private.take().ok_or(FFX_ERROR_INVALID_POINTER)?;
     let mut backend = context.context_description.backend_interface.borrow_mut();
+    context
+        .edge
+        .destroy(&mut *backend, context.effect_context_id);
     for pipeline in [
         &mut context.pipeline_fi_reconstruct_and_dilate,
         &mut context.pipeline_fi_setup,
@@ -847,6 +850,9 @@ pub fn ffx_frame_interpolation_prepare(
             "ffxDispatchDescFrameGenerationPrepareCameraInfo needs to be passed as linked struct. This is a required input to FSR3.1.4 and onwards for best quality.",
         );
     }
+    context
+        .edge
+        .prepare(params, context.context_description.flags);
     context.constants.render_size = [
         params.render_size.width as i32,
         params.render_size.height as i32,
@@ -910,11 +916,15 @@ pub fn ffx_frame_interpolation_prepare(
         params.render_size.width.div_ceil(8),
         params.render_size.height.div_ceil(8),
     );
-    let _ = context
+    if context
         .context_description
         .backend_interface
         .borrow_mut()
-        .execute_gpu_jobs(params.command_list, context.effect_context_id);
+        .execute_gpu_jobs(params.command_list, context.effect_context_id)
+        .is_err()
+    {
+        context.edge.failed_execution();
+    }
     let _ = context
         .context_description
         .backend_interface
@@ -1084,6 +1094,7 @@ pub fn ffx_frame_interpolation_dispatch(
     context.render_description.render_size = params.render_size;
     context.render_description.upscale_size = params.display_size;
     setup_device_depth(context);
+    super::edge::begin_dispatch(context, params);
     stage(context);
     if context.constants.hud_less_attached_factor == 1 {
         crate::assert::ffx_assert!(
@@ -1232,6 +1243,7 @@ pub fn ffx_frame_interpolation_dispatch(
             render[0],
             render[1],
         );
+        super::edge::schedule(context, params)?;
         schedule(
             context,
             &context.pipeline_fi_game_motion_vector_field,
@@ -1245,12 +1257,14 @@ pub fn ffx_frame_interpolation_dispatch(
             optical[0],
             optical[1],
         );
-        schedule(
-            context,
-            &context.pipeline_fi_disocclusion_mask,
-            render[0],
-            render[1],
-        );
+        if !super::edge::schedule_disocclusion(context, params)? {
+            schedule(
+                context,
+                &context.pipeline_fi_disocclusion_mask,
+                render[0],
+                render[1],
+            );
+        }
     }
     schedule(context, &context.pipeline_fi_scfi, display[0], display[1]);
     pyramid(context, params.display_size, false);
@@ -1285,6 +1299,7 @@ pub fn ffx_frame_interpolation_dispatch(
                 ..Default::default()
             }),
         });
+    super::edge::retain(context)?;
     for id in [
         FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_RECONSTRUCTED_DEPTH_INTERPOLATED_FRAME,
         FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_GAME_MOTION_VECTOR_FIELD_X,
@@ -1315,11 +1330,15 @@ pub fn ffx_frame_interpolation_dispatch(
                 }),
             });
     }
-    let _ = context
+    if context
         .context_description
         .backend_interface
         .borrow_mut()
-        .execute_gpu_jobs(params.command_list, context.effect_context_id);
+        .execute_gpu_jobs(params.command_list, context.effect_context_id)
+        .is_err()
+    {
+        context.edge.failed_execution();
+    }
     let _ = context
         .context_description
         .backend_interface

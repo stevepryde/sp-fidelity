@@ -44,6 +44,8 @@ use wgpu::util::DeviceExt;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod atomic_tests;
 mod dispatch_grid;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod edge_tests;
 pub mod presentation;
 pub mod readback;
 

@@ -1,6 +1,6 @@
 # sp-fidelity
 
-A standalone, unofficial 1:1 Rust and WGSL port of the FSR2 and FSR3.1.4 C++ and HLSL
+A standalone, unofficial Rust and WGSL port of the FSR2 and FSR3.1.4 C++ and HLSL
 source in
 [AMD FidelityFX SDK 1.1.4](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55),
 produced entirely using AI coding agents. Not affiliated with, endorsed by,
@@ -23,6 +23,10 @@ backend implements `interface::FfxInterface`. Both crates compile for
 `wasm32-unknown-unknown`, but FSR2/FSR3 execution in browser WebGPU and forced
 wave64 are not supported. The upscaled output uses RGBA16F. The SDK's
 standalone generate-reactive host call remains a no-op; its GPU pass is ported.
+
+The original algorithms are retained, with documented platform adaptations and
+an optional camera-supported frame-interpolation edge extension described in
+[CONFORMANCE.md](CONFORMANCE.md#sdk-p29--camera-supported-outgoing-edge-reconstruction).
 
 ## FSR3.1.4
 
@@ -50,6 +54,41 @@ upscaler's zero-size fallback. The standalone interpolation component supports
 prepare and interpolation without the upscaler. The declared upstream
 `ffxFsr3SkipPresent` has no implementation in this SDK revision and is not
 exported by the Rust port.
+
+### Optional camera-supported outgoing edges
+
+For a symmetric perspective camera, populate prepare's existing
+`camera_position`, `camera_right`, `camera_up`, and `camera_forward` fields.
+The axes must be finite orthonormal unit vectors, with forward pointing into
+view. Position, near/far distances and scene depth use the same world units.
+Supply the matching near/far, vertical FOV, render dimensions and frame ID on
+prepare and dispatch; the SDK's reversed-depth near/far ordering is accepted.
+The jitter is the raster UV offset in render pixels: raster UV equals stable
+UV plus jitter divided by render size. Motion vectors must be unjittered,
+using the existing SDK scale/sign convention.
+
+The port retains actual previous depth and motion. With two earlier camera
+poses it reprojects static geometry that has left the current viewport into
+the intermediate frame. Finite depth-cell triangles cover magnified
+surfaces; depth discontinuities split the mesh. It checks camera-predicted
+motion against the previous game motion to reject moving objects. Actual
+previous depth rejects old occluders when current geometry alone would wrongly
+reuse their colors. Aligned source contributions fade smoothly at the image
+boundary, preserving the existing color-inpainting fallback. The original
+current-frame reconstruction, optical flow and inpainting remain in use;
+the camera-enabled disocclusion variant adds prior-visibility rejection.
+The extension adds two render-size textures (8 bytes per maximum render pixel),
+two copies and one compute pass. Textures and pipeline are allocated lazily.
+
+Leave the basis zero to use the original AMD path. Invalid camera metadata,
+jittered motion-vector mode or a nonzero distortion-field resource disables
+reconstruction. Reset after camera cuts or world-origin changes. Explicit
+reset, nonconsecutive IDs, missing prepare metadata, render/display/viewport
+changes, attached distortion fields and GPU job execution failures discard
+geometry history; two new history frames are needed. Outgoing dynamic objects,
+sky and cells that exceed the bounded rasterization work budget continue to
+use the original fallback. Camera-motion agreement is a conservative static
+surface estimate, not object identity or a prediction of future object motion.
 
 ## Conformance
 

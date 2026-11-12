@@ -2,6 +2,7 @@
 use crate::interface::FfxInterfaceRef;
 use crate::types::*;
 pub mod component;
+mod edge;
 pub mod private;
 pub mod resources;
 pub use component::*;
@@ -24,6 +25,10 @@ pub enum FfxFrameInterpolationPass {
     Inpainting,
     GameVectorFieldInpaintingPyramid,
     DebugView,
+    /// Port extension: camera-supported reconstruction of outgoing geometry.
+    ReconstructOutgoingGeometry,
+    /// Port extension: disocclusion using retained actual previous depth.
+    DisocclusionWithCameraVisibility,
 }
 
 pub const FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INVERTED: u32 = 1 << 0;
@@ -89,6 +94,11 @@ pub struct FfxFrameInterpolationPrepareDescription {
     pub dilated_depth: FfxResource,
     pub dilated_motion_vectors: FfxResource,
     pub reconstructed_prev_depth: FfxResource,
+    /// Optional outgoing-edge reconstruction: world-space camera position.
+    /// Supply this and an orthonormal right/up/forward basis for consecutive
+    /// frames of a symmetric perspective camera. Zero basis disables the
+    /// extension. Reset dispatch after cuts or changes to the world origin.
+    /// See the crate README for depth, jitter and motion-vector conventions.
     pub camera_position: FfxFloat32x3,
     pub camera_up: FfxFloat32x3,
     pub camera_right: FfxFloat32x3,
@@ -130,4 +140,4 @@ pub struct FfxFrameInterpolationContext {
     pub(crate) private: Option<Box<private::FfxFrameInterpolationContextPrivate>>,
 }
 
-pub const FFX_FRAMEINTERPOLATION_PASS_COUNT: u32 = 11;
+pub const FFX_FRAMEINTERPOLATION_PASS_COUNT: u32 = 13;
