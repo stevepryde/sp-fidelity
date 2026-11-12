@@ -42,6 +42,8 @@ pub struct Recorder {
     next_resource: i32,
     next_context: u32,
     capabilities: FfxDeviceCapabilities,
+    #[cfg(test)]
+    fail_next_allocation: bool,
 }
 
 impl Recorder {
@@ -53,6 +55,8 @@ impl Recorder {
             next_resource: 1,
             next_context: 0,
             capabilities,
+            #[cfg(test)]
+            fail_next_allocation: false,
         }
     }
 
@@ -172,6 +176,10 @@ impl FfxInterface for Recorder {
         d: &FfxCreateResourceDescription<'_>,
         _: u32,
     ) -> Result<FfxResourceInternal, FfxErrorCode> {
+        #[cfg(test)]
+        if std::mem::take(&mut self.fail_next_allocation) {
+            return Err(FFX_ERROR_OUT_OF_MEMORY);
+        }
         let index = self.next_resource;
         self.next_resource += 1;
         self.resources
@@ -426,5 +434,99 @@ impl FfxInterface for Recorder {
     fn execute_gpu_jobs(&mut self, _: FfxCommandList, id: u32) -> Result<(), FfxErrorCode> {
         self.events.push(json!(["execute", id]));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sp_fidelity::frameinterpolation::*;
+
+    #[test]
+    fn edge_allocation_failure_finishes_registered_dispatch() {
+        // A backend allocation failure used to escape after SDK jobs were
+        // queued, without executing them or releasing external registrations.
+        // Observe the real component's FfxInterface calls at that boundary.
+        let backend = Rc::new(RefCell::new(Recorder::new(FfxDeviceCapabilities {
+            maximum_supported_shader_model: FfxShaderModel::ShaderModel6_2,
+            wave_lane_count_min: 32,
+            wave_lane_count_max: 32,
+            ..Default::default()
+        })));
+        let size = FfxDimensions2D {
+            width: 96,
+            height: 64,
+        };
+        let format = FfxSurfaceFormat::R16G16B16A16Float;
+        let mut context = FfxFrameInterpolationContext::default();
+        ffx_frame_interpolation_context_create(
+            &mut context,
+            &FfxFrameInterpolationContextDescription {
+                max_render_size: size,
+                display_size: size,
+                back_buffer_format: format,
+                previous_interpolation_source_format: format,
+                backend_interface: backend.clone(),
+                flags: 0,
+            },
+        )
+        .unwrap();
+        let resource = |name| backend.borrow_mut().external(name, 96, 64);
+        let mut color = resource("color");
+        color.description.format = format;
+        let depth = resource("depth");
+        let motion = resource("motion");
+        let reconstructed = resource("reconstructed");
+        let output = resource("output");
+        let prepared = FfxFrameInterpolationPrepareDescription {
+            render_size: size,
+            camera_near: 0.1,
+            camera_far: 100.0,
+            camera_fov_angle_vertical: 1.0,
+            camera_right: [1.0, 0.0, 0.0],
+            camera_up: [0.0, 1.0, 0.0],
+            camera_forward: [0.0, 0.0, 1.0],
+            depth: depth.clone(),
+            motion_vectors: motion.clone(),
+            dilated_depth: depth.clone(),
+            dilated_motion_vectors: motion.clone(),
+            reconstructed_prev_depth: reconstructed.clone(),
+            ..Default::default()
+        };
+        ffx_frame_interpolation_prepare(&mut context, &prepared).unwrap();
+        backend.borrow_mut().events.clear();
+        backend.borrow_mut().fail_next_allocation = true;
+        let dispatch = FfxFrameInterpolationDispatchDescription {
+            render_size: size,
+            display_size: size,
+            current_back_buffer: color,
+            output,
+            dilated_depth: depth,
+            dilated_motion_vectors: motion,
+            reconstructed_prev_depth: reconstructed,
+            camera_near: 0.1,
+            camera_far: 100.0,
+            camera_fov_angle_vertical: 1.0,
+            optical_flow_block_size: 8,
+            interpolation_rect: FfxRect2D {
+                width: 96,
+                height: 64,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            ffx_frame_interpolation_dispatch(&mut context, &dispatch),
+            Err(FFX_ERROR_OUT_OF_MEMORY)
+        );
+        {
+            let recorder = backend.borrow();
+            let events = &recorder.events;
+            assert_eq!(
+                &events[events.len() - 2..],
+                &[json!(["execute", 0]), json!(["unregister", 0])]
+            );
+        }
+        ffx_frame_interpolation_context_destroy(&mut context).unwrap();
     }
 }

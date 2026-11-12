@@ -1209,126 +1209,135 @@ pub fn ffx_frame_interpolation_dispatch(
         ((params.display_size.height as f32 / params.optical_flow_block_size as f32 + 7.0) as u32)
             / 8,
     ];
-    for id in [
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_RECONSTRUCTED_DEPTH_INTERPOLATED_FRAME,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_GAME_MOTION_VECTOR_FIELD_X,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_GAME_MOTION_VECTOR_FIELD_Y,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_INPAINTING_PYRAMID,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_OPTICAL_FLOW_MOTION_VECTOR_FIELD_X,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_OPTICAL_FLOW_MOTION_VECTOR_FIELD_Y,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_INPAINTING_MASK,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_DISOCCLUSION_MASK,
-    ] {
-        let _ = context
-            .context_description
-            .backend_interface
-            .borrow_mut()
-            .schedule_gpu_job(&FfxGpuJobDescription {
-                job_label: String::new(),
-                descriptor: FfxGpuJobDescriptor::Discard(FfxDiscardJobDescription {
-                    target: context.uav_resources[id as usize],
-                }),
-            });
-    }
-    schedule(context, &context.pipeline_fi_setup, render[0], render[1]);
-    if context.constants.reset == 0 {
-        clear_depth(
-            context,
+    // Extension callbacks can fail after ordinary SDK work has been queued.
+    // Always drain that work while its external resources are still registered;
+    // otherwise a later effect dispatch could execute jobs from this failed frame.
+    let scheduled = (|| -> Result<(), FfxErrorCode> {
+        for id in [
             FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_RECONSTRUCTED_DEPTH_INTERPOLATED_FRAME,
-            "Clear Reconstructed Depth Interpolated Frame",
-        );
-        schedule(
-            context,
-            &context.pipeline_fi_reconstruct_previous_depth,
-            render[0],
-            render[1],
-        );
-        super::edge::schedule(context, params)?;
-        schedule(
-            context,
-            &context.pipeline_fi_game_motion_vector_field,
-            render[0],
-            render[1],
-        );
-        pyramid(context, params.render_size, true);
-        schedule(
-            context,
-            &context.pipeline_fi_optical_flow_vector_field,
-            optical[0],
-            optical[1],
-        );
-        if !super::edge::schedule_disocclusion(context, params)? {
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_GAME_MOTION_VECTOR_FIELD_X,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_GAME_MOTION_VECTOR_FIELD_Y,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_INPAINTING_PYRAMID,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_OPTICAL_FLOW_MOTION_VECTOR_FIELD_X,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_OPTICAL_FLOW_MOTION_VECTOR_FIELD_Y,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_INPAINTING_MASK,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_DISOCCLUSION_MASK,
+        ] {
+            let _ = context
+                .context_description
+                .backend_interface
+                .borrow_mut()
+                .schedule_gpu_job(&FfxGpuJobDescription {
+                    job_label: String::new(),
+                    descriptor: FfxGpuJobDescriptor::Discard(FfxDiscardJobDescription {
+                        target: context.uav_resources[id as usize],
+                    }),
+                });
+        }
+        schedule(context, &context.pipeline_fi_setup, render[0], render[1]);
+        if context.constants.reset == 0 {
+            clear_depth(
+                context,
+                FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_RECONSTRUCTED_DEPTH_INTERPOLATED_FRAME,
+                "Clear Reconstructed Depth Interpolated Frame",
+            );
             schedule(
                 context,
-                &context.pipeline_fi_disocclusion_mask,
+                &context.pipeline_fi_reconstruct_previous_depth,
                 render[0],
                 render[1],
             );
+            super::edge::schedule(context, params)?;
+            schedule(
+                context,
+                &context.pipeline_fi_game_motion_vector_field,
+                render[0],
+                render[1],
+            );
+            pyramid(context, params.render_size, true);
+            schedule(
+                context,
+                &context.pipeline_fi_optical_flow_vector_field,
+                optical[0],
+                optical[1],
+            );
+            if !super::edge::schedule_disocclusion(context, params)? {
+                schedule(
+                    context,
+                    &context.pipeline_fi_disocclusion_mask,
+                    render[0],
+                    render[1],
+                );
+            }
         }
-    }
-    schedule(context, &context.pipeline_fi_scfi, display[0], display[1]);
-    pyramid(context, params.display_size, false);
-    schedule(
-        context,
-        &context.pipeline_inpainting,
-        display[0],
-        display[1],
-    );
-    if params.flags & FFX_FRAMEINTERPOLATION_DISPATCH_DRAW_DEBUG_VIEW != 0 {
-        pyramid(context, params.render_size, true);
+        schedule(context, &context.pipeline_fi_scfi, display[0], display[1]);
+        pyramid(context, params.display_size, false);
         schedule(
             context,
-            &context.pipeline_debug_view,
+            &context.pipeline_inpainting,
             display[0],
             display[1],
         );
-    }
-    let _ = context
-        .context_description
-        .backend_interface
-        .borrow_mut()
-        .schedule_gpu_job(&FfxGpuJobDescription {
-            job_label: String::new(),
-            descriptor: FfxGpuJobDescriptor::Copy(FfxCopyJobDescription {
-                src: context.srv_resources
-                    [FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_CURRENT_INTERPOLATION_SOURCE
-                        as usize],
-                dst: context.uav_resources
-                    [FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_PREVIOUS_INTERPOLATION_SOURCE
-                        as usize],
-                ..Default::default()
-            }),
-        });
-    super::edge::retain(context)?;
-    for id in [
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_RECONSTRUCTED_DEPTH_INTERPOLATED_FRAME,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_GAME_MOTION_VECTOR_FIELD_X,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_GAME_MOTION_VECTOR_FIELD_Y,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_INPAINTING_PYRAMID,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_COUNTERS,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_OPTICAL_FLOW_MOTION_VECTOR_FIELD_X,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_OPTICAL_FLOW_MOTION_VECTOR_FIELD_Y,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_PREVIOUS_INTERPOLATION_SOURCE,
-        FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_DISOCCLUSION_MASK,
-    ] {
+        if params.flags & FFX_FRAMEINTERPOLATION_DISPATCH_DRAW_DEBUG_VIEW != 0 {
+            pyramid(context, params.render_size, true);
+            schedule(
+                context,
+                &context.pipeline_debug_view,
+                display[0],
+                display[1],
+            );
+        }
         let _ = context
             .context_description
             .backend_interface
             .borrow_mut()
             .schedule_gpu_job(&FfxGpuJobDescription {
                 job_label: String::new(),
-                descriptor: FfxGpuJobDescriptor::Barrier(FfxBarrierDescription {
-                    resource: context.srv_resources[id as usize],
-                    sub_resource_id: 0,
-                    new_state: if id == FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_COUNTERS {
-                        FFX_RESOURCE_STATE_COPY_DEST
-                    } else {
-                        FFX_RESOURCE_STATE_UNORDERED_ACCESS
-                    },
-                    current_state: 0,
-                    barrier_type: FfxBarrierType::Transition,
+                descriptor: FfxGpuJobDescriptor::Copy(FfxCopyJobDescription {
+                    src: context.srv_resources
+                        [FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_CURRENT_INTERPOLATION_SOURCE
+                            as usize],
+                    dst: context.uav_resources
+                        [FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_PREVIOUS_INTERPOLATION_SOURCE
+                            as usize],
+                    ..Default::default()
                 }),
             });
+        super::edge::retain(context)?;
+        for id in [
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_RECONSTRUCTED_DEPTH_INTERPOLATED_FRAME,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_GAME_MOTION_VECTOR_FIELD_X,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_GAME_MOTION_VECTOR_FIELD_Y,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_INPAINTING_PYRAMID,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_COUNTERS,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_OPTICAL_FLOW_MOTION_VECTOR_FIELD_X,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_OPTICAL_FLOW_MOTION_VECTOR_FIELD_Y,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_PREVIOUS_INTERPOLATION_SOURCE,
+            FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_DISOCCLUSION_MASK,
+        ] {
+            let _ = context
+                .context_description
+                .backend_interface
+                .borrow_mut()
+                .schedule_gpu_job(&FfxGpuJobDescription {
+                    job_label: String::new(),
+                    descriptor: FfxGpuJobDescriptor::Barrier(FfxBarrierDescription {
+                        resource: context.srv_resources[id as usize],
+                        sub_resource_id: 0,
+                        new_state: if id == FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_COUNTERS {
+                            FFX_RESOURCE_STATE_COPY_DEST
+                        } else {
+                            FFX_RESOURCE_STATE_UNORDERED_ACCESS
+                        },
+                        current_state: 0,
+                        barrier_type: FfxBarrierType::Transition,
+                    }),
+                });
+        }
+        Ok(())
+    })();
+    if scheduled.is_err() {
+        context.edge.failed_execution();
     }
     if context
         .context_description
@@ -1344,5 +1353,5 @@ pub fn ffx_frame_interpolation_dispatch(
         .backend_interface
         .borrow_mut()
         .unregister_resources(params.command_list, context.effect_context_id);
-    Ok(())
+    scheduled
 }
