@@ -3280,6 +3280,39 @@ mod tests {
     }
 
     #[test]
+    fn standalone_fsr3_upscaling_builds_its_gpu_pipelines() {
+        // The oracle enables frame generation, so it cannot catch an upscaling
+        // shader accidentally hidden behind that feature. Exercise the public
+        // context through the real WGSL and GPU compilers in either build.
+        use sp_fidelity::fsr3upscaler::*;
+        let Some((device, _queue)) = device() else {
+            return;
+        };
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let (_backend, interface) = ffx_get_interface_wgpu(&device);
+        let mut context = FfxFsr3UpscalerContext::default();
+        ffx_fsr3_upscaler_context_create(
+            &mut context,
+            &FfxFsr3UpscalerContextDescription {
+                flags: FFX_FSR3UPSCALER_ENABLE_HIGH_DYNAMIC_RANGE,
+                max_render_size: FfxDimensions2D {
+                    width: 128,
+                    height: 72,
+                },
+                max_upscale_size: FfxDimensions2D {
+                    width: 192,
+                    height: 108,
+                },
+                fp_message: None,
+                backend_interface: interface,
+            },
+        )
+        .unwrap();
+        ffx_fsr3_upscaler_context_destroy(&mut context).unwrap();
+        assert!(pollster::block_on(scope.pop()).is_none());
+    }
+
+    #[test]
     fn fsr2_runs_below_a_64_pixel_maximum_render_size() {
         // Defect: a UAV view of a mip the texture lacks. FSR2's luminance
         // pyramid binds FSR2_ExposureMips (half the maximum render size, full
