@@ -1,5 +1,10 @@
 # Frame interpolation presentation contract
 
+Frame generation is experimental and unsupported because visual artifacts remain.
+It is disabled by default behind `frame-generation`.
+[C++ reproductions](https://github.com/stevepryde/sp-fidelity/tree/main/crates/sp-fidelity-oracle/repro/frameinterpolation_edges) are retained and fixes are welcome;
+no further frame-generation development is planned.
+
 The native wgpu backend ports AMD SDK 1.1.4's frame-interpolation swapchain
 behavior. The reference is the unchanged DX12/Vulkan presentation code at
 the revision in `crates/sp-fidelity/vendor/sdk-1.1.4/source-revision.txt`.

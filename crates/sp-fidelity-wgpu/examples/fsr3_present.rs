@@ -1,5 +1,9 @@
 //! Windowed AMD FSR3 upscaling, interpolation and paced presentation.
-//! `cargo run -p sp-fidelity-wgpu --example fsr3_present -- --frames 120`
+//!
+//! Frame generation is unsupported because of unresolved motion artifacts.
+//! Its code is retained for diagnostics; use standalone FSR2/FSR3 upscaling
+//! for supported application integration.
+//! `cargo run -p sp-fidelity-wgpu --features frame-generation --example fsr3_present -- --frames 120`
 //! The finite run also exercises disable/enable, resize and joined shutdown.
 #[cfg(target_arch = "wasm32")]
 fn main() {}

@@ -704,6 +704,9 @@ pub fn ffx_frame_interpolation_context_destroy(
 ) -> Result<(), FfxErrorCode> {
     let mut context = context.private.take().ok_or(FFX_ERROR_INVALID_POINTER)?;
     let mut backend = context.context_description.backend_interface.borrow_mut();
+    context
+        .outgoing
+        .destroy(&mut *backend, context.effect_context_id);
     for pipeline in [
         &mut context.pipeline_fi_reconstruct_and_dilate,
         &mut context.pipeline_fi_setup,
@@ -832,6 +835,7 @@ pub fn ffx_frame_interpolation_prepare(
     params: &FfxFrameInterpolationPrepareDescription,
 ) -> Result<(), FfxErrorCode> {
     let context = context.private.as_mut().ok_or(FFX_ERROR_INVALID_POINTER)?;
+    super::outgoing::prepare(context, params)?;
     if context.context_description.flags & FFX_FRAMEINTERPOLATION_ENABLE_DEBUG_CHECKING != 0
         && [
             params.camera_position,
@@ -899,6 +903,7 @@ pub fn ffx_frame_interpolation_prepare(
         FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_RECONSTRUCTED_DEPTH_PREVIOUS_FRAME,
         true,
     );
+    let outgoing_result = super::outgoing::capture(context);
     clear_depth(
         context,
         FFX_FRAMEINTERPOLATION_RESOURCE_IDENTIFIER_RECONSTRUCTED_DEPTH_PREVIOUS_FRAME,
@@ -910,12 +915,12 @@ pub fn ffx_frame_interpolation_prepare(
         params.render_size.width.div_ceil(8),
         params.render_size.height.div_ceil(8),
     );
-    let _ = context
+    let executed = context
         .context_description
         .backend_interface
         .borrow_mut()
         .execute_gpu_jobs(params.command_list, context.effect_context_id);
-    let _ = context
+    let unregistered = context
         .context_description
         .backend_interface
         .borrow_mut()
@@ -933,7 +938,9 @@ pub fn ffx_frame_interpolation_prepare(
     ] {
         context.uav_resources[id as usize] = Default::default();
     }
-    Ok(())
+    let result = outgoing_result.and(executed).and(unregistered);
+    super::outgoing::finish(context, result.is_ok(), false);
+    result
 }
 
 fn setup_device_depth(context: &mut FfxFrameInterpolationContextPrivate) {
@@ -1084,6 +1091,7 @@ pub fn ffx_frame_interpolation_dispatch(
     context.render_description.render_size = params.render_size;
     context.render_description.upscale_size = params.display_size;
     setup_device_depth(context);
+    super::outgoing::begin_dispatch(context, params);
     stage(context);
     if context.constants.hud_less_attached_factor == 1 {
         crate::assert::ffx_assert!(
@@ -1220,6 +1228,7 @@ pub fn ffx_frame_interpolation_dispatch(
             });
     }
     schedule(context, &context.pipeline_fi_setup, render[0], render[1]);
+    let mut current_geometry_result = Ok(());
     if context.constants.reset == 0 {
         clear_depth(
             context,
@@ -1238,6 +1247,7 @@ pub fn ffx_frame_interpolation_dispatch(
             render[0],
             render[1],
         );
+        current_geometry_result = super::outgoing::reconstruct_current(context, params);
         pyramid(context, params.render_size, true);
         schedule(
             context,
@@ -1252,6 +1262,7 @@ pub fn ffx_frame_interpolation_dispatch(
             render[1],
         );
     }
+    let outgoing_result = super::outgoing::reconstruct(context, params);
     schedule(context, &context.pipeline_fi_scfi, display[0], display[1]);
     pyramid(context, params.display_size, false);
     schedule(
@@ -1315,15 +1326,22 @@ pub fn ffx_frame_interpolation_dispatch(
                 }),
             });
     }
-    let _ = context
+    let retained = super::outgoing::retain_distortion(context, params);
+    let executed = context
         .context_description
         .backend_interface
         .borrow_mut()
         .execute_gpu_jobs(params.command_list, context.effect_context_id);
-    let _ = context
+    let unregistered = context
         .context_description
         .backend_interface
         .borrow_mut()
         .unregister_resources(params.command_list, context.effect_context_id);
-    Ok(())
+    let result = current_geometry_result
+        .and(outgoing_result)
+        .and(retained)
+        .and(executed)
+        .and(unregistered);
+    super::outgoing::finish(context, result.is_ok(), true);
+    result
 }

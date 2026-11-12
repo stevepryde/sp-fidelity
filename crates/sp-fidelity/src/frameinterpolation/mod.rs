@@ -1,7 +1,12 @@
 //! Port of `sdk/include/FidelityFX/host/ffx_frameinterpolation.h` (FidelityFX SDK 1.1.4).
+//!
+//! Frame generation is unsupported because of unresolved motion artifacts.
+//! Its code is retained for diagnostics; use standalone FSR2/FSR3 upscaling
+//! for supported application integration.
 use crate::interface::FfxInterfaceRef;
 use crate::types::*;
 pub mod component;
+mod outgoing;
 pub mod private;
 pub mod resources;
 pub use component::*;
@@ -24,6 +29,13 @@ pub enum FfxFrameInterpolationPass {
     Inpainting,
     GameVectorFieldInpaintingPyramid,
     DebugView,
+    // Rust/WGSL correction passes, outside AMD's original pass-ID range.
+    RetainOutgoingGeometry = 0x1000,
+    ReconstructOutgoingGeometry,
+    ResolveOutgoingGeometry,
+    RetainOutgoingDistortion,
+    ReconstructCurrentGeometry,
+    ResolveCurrentGeometry,
 }
 
 pub const FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INVERTED: u32 = 1 << 0;
@@ -128,6 +140,26 @@ pub struct FfxFrameInterpolationDispatchDescription {
 #[derive(Default)]
 pub struct FfxFrameInterpolationContext {
     pub(crate) private: Option<Box<private::FfxFrameInterpolationContextPrivate>>,
+}
+
+/// Enable the Rust-only outgoing-geometry correction (enabled by default).
+///
+/// Disable it for upstream conformance comparisons or diagnosis. This selects
+/// AMD's original reconstruction while retaining the separate SDK-P33 bounds
+/// correction. Changing the mode invalidates the correction's history.
+/// Valid prepare camera metadata is required even when enabled. This function
+/// has no C++ SDK equivalent; see SDK-P34 in `CONFORMANCE.md`.
+pub fn ffx_frame_interpolation_set_outgoing_reconstruction(
+    context: &mut FfxFrameInterpolationContext,
+    enabled: bool,
+) -> Result<(), crate::error::FfxErrorCode> {
+    let private = context
+        .private
+        .as_mut()
+        .ok_or(crate::error::FFX_ERROR_INVALID_POINTER)?;
+    private.outgoing.disabled = !enabled;
+    private.outgoing.invalidate();
+    Ok(())
 }
 
 pub const FFX_FRAMEINTERPOLATION_PASS_COUNT: u32 = 11;

@@ -1,9 +1,15 @@
-//! Complete prepare/interpolation sequences against unchanged HLSL, including history.
+//! Complete prepare/interpolation sequences against original HLSL, including history.
+//! Full-resolution parity applies the isolated SDK-P33 bounds fix to the reference;
+//! small controls and the ground reproduction retain unchanged original shaders.
 //! cargo test -p sp-fidelity-oracle --release --test frameinterpolation_passes -- --ignored --nocapture
+#[path = "framegen_support/bounds.rs"]
+mod bounds;
 #[path = "framegen_support/frameinterpolation.rs"]
 #[allow(dead_code)]
 mod driver;
 mod framegen_support;
+#[path = "framegen_support/ground.rs"]
+mod ground;
 #[path = "framegen_support/gpu.rs"]
 mod inputs;
 use framegen_support::Words;
@@ -93,11 +99,11 @@ fn compare_outputs(
     })
 }
 
-fn run(flags: u32, render: [u32; 2], display: [u32; 2], serialize_spd: bool) -> bool {
+fn run(flags: u32, render: [u32; 2], display: [u32; 2], serialize_spd: bool, plane: bool) -> bool {
     let gpu = gpu::Gpu::new(false, None);
     let vector = display.map(|n: u32| n.div_ceil(8));
     let directory = gpu::case_directory(&format!(
-        "frameinterpolation-flags-{flags}-{}x{}",
+        "frameinterpolation-flags-{flags}-{}x{}-plane-{plane}",
         display[0], display[1]
     ));
     let application = [
@@ -106,13 +112,17 @@ fn run(flags: u32, render: [u32; 2], display: [u32; 2], serialize_spd: bool) -> 
             "depth",
             render,
             FfxSurfaceFormat::R32Float,
-            (0..render[1])
-                .flat_map(|y| {
-                    (0..render[0]).flat_map(move |x| {
-                        (0.2 + ((x / 8 + y / 8) % 4) as f32 * 0.15).to_le_bytes()
+            if plane {
+                ground::inputs(render).0
+            } else {
+                (0..render[1])
+                    .flat_map(|y| {
+                        (0..render[0]).flat_map(move |x| {
+                            (0.2f32 + ((x / 8 + y / 8) % 4) as f32 * 0.15).to_le_bytes()
+                        })
                     })
-                })
-                .collect(),
+                    .collect()
+            },
             false,
         ),
         inputs::input(
@@ -120,9 +130,13 @@ fn run(flags: u32, render: [u32; 2], display: [u32; 2], serialize_spd: bool) -> 
             "motion-vectors",
             display,
             FfxSurfaceFormat::R16G16Float,
-            (0..display[0] * display[1])
-                .flat_map(|_| [0x1800u16, 0x9400].into_iter().flat_map(u16::to_le_bytes))
-                .collect(),
+            if plane {
+                ground::inputs(display).1
+            } else {
+                (0..display[0] * display[1])
+                    .flat_map(|_| [0x1800u16, 0x9400].into_iter().flat_map(u16::to_le_bytes))
+                    .collect()
+            },
             false,
         ),
         inputs::input(
@@ -210,6 +224,9 @@ fn run(flags: u32, render: [u32; 2], display: [u32; 2], serialize_spd: bool) -> 
         [FfxSurfaceFormat::R16G16B16A16Float; 2],
         16,
     );
+    if plane {
+        words = ground::words(flags, render);
+    }
     let mut w = Words {
         words: &words,
         at: 1,
@@ -224,6 +241,8 @@ fn run(flags: u32, render: [u32; 2], display: [u32; 2], serialize_spd: bool) -> 
     };
     let mut context = FfxFrameInterpolationContext::default();
     ffx_frame_interpolation_context_create(&mut context, &description).unwrap();
+    // Compare unchanged SDK reconstruction; SDK-P34 has independent geometry regressions.
+    ffx_frame_interpolation_set_outgoing_reconstruction(&mut context, false).unwrap();
     let mut updates = Vec::new();
     let mut dispatch_flags = Vec::new();
     for frame in 0..w.word() as usize {
@@ -270,7 +289,11 @@ fn run(flags: u32, render: [u32; 2], display: [u32; 2], serialize_spd: bool) -> 
             };
             ffx_frame_interpolation_prepare(&mut context, &prepare).unwrap();
         } else {
-            let color = inputs::color(display, (frame / 2) as u32);
+            let color = if plane {
+                ground::color(display, (frame / 2) as u32)
+            } else {
+                inputs::color(display, (frame / 2) as u32)
+            };
             gpu::upload(&gpu.queue, &application[5].texture, &color);
             updates.push(vec![("color", color)]);
             let dispatch = FfxFrameInterpolationDispatchDescription {
@@ -380,16 +403,23 @@ fn run(flags: u32, render: [u32; 2], display: [u32; 2], serialize_spd: bool) -> 
             trace.push('\n');
         }
         fs::write(serial.join("cpp.jsonl"), trace).unwrap();
-        let comparison = compare::compare(
-            &gpu::run_sequence(&serial, &FRAMEINTERPOLATION),
-            FRAMEINTERPOLATION.stages,
-            &|_| Err("output must match serialized original HLSL exactly".into()),
-        );
+        let sequence = if plane {
+            gpu::run_sequence(&serial, &FRAMEINTERPOLATION)
+        } else {
+            bounds::sequence(&serial)
+        };
+        let comparison = compare::compare(&sequence, FRAMEINTERPOLATION.stages, &|_| {
+            Err("output must match the selected original-HLSL control exactly".into())
+        });
         println!(
-            "{} original HLSL with serialized tile scheduling: {}",
+            "{} original HLSL with serialized tiles (SDK-P33 bounds correction: {}): {}",
             directory.display(),
+            !plane,
             comparison.summary()
         );
+        if plane {
+            ground::diagnose(&directory, &serial.join("sequence"), &events, render);
+        }
         return comparison.accepted();
     }
     let mut boundary = SpdBoundary::default();
@@ -453,6 +483,7 @@ fn frameinterpolation_full_sequence_matches_original_hlsl() {
             render,
             display,
             false,
+            false,
         );
     }
     for key in 0..8 {
@@ -460,7 +491,7 @@ fn frameinterpolation_full_sequence_matches_original_hlsl() {
             | ((key & 2) << 3)
             | ((key & 4) << 3)
             | FFX_FRAMEINTERPOLATION_ENABLE_ASYNC_SUPPORT;
-        accepted &= run(flags, [128, 96], [192, 128], false);
+        accepted &= run(flags, [128, 96], [192, 128], false, false);
     }
     assert!(
         accepted,
@@ -470,13 +501,30 @@ fn frameinterpolation_full_sequence_matches_original_hlsl() {
 
 #[test]
 #[ignore = "requires Metal and compiled DXC variants; captures full-resolution mip chains"]
-fn frameinterpolation_game_resolution_matches_serialized_original_hlsl() {
-    assert!(run(
-        FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INVERTED
-            | FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INFINITE
-            | FFX_FRAMEINTERPOLATION_ENABLE_ASYNC_SUPPORT,
+fn frameinterpolation_game_resolution_matches_bounded_original_hlsl() {
+    for scheduling in [0, FFX_FRAMEINTERPOLATION_ENABLE_ASYNC_SUPPORT] {
+        assert!(run(
+            FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INVERTED
+                | FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INFINITE
+                | scheduling,
+            [1200, 750],
+            [1200, 750],
+            true,
+            false,
+        ));
+    }
+}
+
+#[test]
+#[ignore = "requires Metal and compiled DXC variants"]
+fn outgoing_ground_reproduces_original_edge_limit() {
+    // The diagnostic asserts its independent geometric and single-pass controls.
+    // Full-sequence parity is reported separately, without accepting its differences.
+    run(
+        FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INVERTED | FFX_FRAMEINTERPOLATION_ENABLE_DEPTH_INFINITE,
         [1200, 750],
         [1200, 750],
         true,
-    ));
+        true,
+    );
 }

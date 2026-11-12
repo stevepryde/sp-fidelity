@@ -100,6 +100,7 @@ pub struct FfxFrameInterpolationRenderDescription {
     pub motion_vector_scale: FfxFloatCoords2D,
 }
 pub struct FfxFrameInterpolationContextPrivate {
+    pub(super) outgoing: super::outgoing::OutgoingHistory,
     pub context_description: FfxFrameInterpolationContextDescription,
     pub effect_context_id: FfxUInt32,
     pub render_description: FfxFrameInterpolationRenderDescription,
@@ -132,6 +133,7 @@ pub struct FfxFrameInterpolationContextPrivate {
 impl FfxFrameInterpolationContextPrivate {
     pub fn zeroed(context_description: FfxFrameInterpolationContextDescription) -> Self {
         Self {
+            outgoing: Default::default(),
             context_description,
             effect_context_id: Default::default(),
             render_description: Default::default(),

@@ -24,5 +24,17 @@ pollster.workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 winit.workspace = true
 
+[features]
+default = []
+frame-generation = ["sp-fidelity/frame-generation"]
+
 [lints.rust]
 unsafe_code = "forbid"
+
+[[example]]
+name = "fsr3"
+required-features = ["frame-generation"]
+
+[[example]]
+name = "fsr3_present"
+required-features = ["frame-generation"]

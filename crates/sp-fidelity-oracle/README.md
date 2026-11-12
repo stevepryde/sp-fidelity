@@ -65,7 +65,16 @@ variant, as AMD's generated per-permutation tables do.
 
 ## Development checks
 
-Use the pinned Rust toolchain. From the repository root:
+Use the pinned Rust toolchain. The oracle enables `frame-generation` on its
+dependencies for the retained diagnostics. Check the runtime packages separately
+to exercise the default upscaling-only build:
+
+```sh
+cargo clippy -p sp-fidelity -p sp-fidelity-wgpu --all-targets -- -D warnings
+SP_FIDELITY_REQUIRE_GPU=1 cargo test -p sp-fidelity -p sp-fidelity-wgpu
+```
+
+Then run the full development suite from the repository root:
 
 ```sh
 cargo fmt --check
@@ -110,9 +119,48 @@ The full-resolution FI test uses original HLSL with serialized tile scheduling
 for SPD: each tile runs through AMD's existing workgroup-offset parameter, with
 its original atomic counter and total group count. The last tile computes the
 unchanged upper mip chain after preceding writes complete. The entire sequence
-carries its own history and compares exactly. This is a synchronization control
+carries its own history. Its game-field entry also excludes out-of-render
+invocations, the independently reproduced SDK-P33 fix; every other shader is
+unchanged. It compares exactly against that explicitly corrected reference.
+This is a synchronization control
 for the Metal translation, not execution of AMD's supported DX12/Vulkan pipeline;
 the original parallel replay remains separate.
+
+Host and GPU parity runs explicitly disable the Rust-only SDK-P34 reconstruction
+correction while retaining SDK-P33. Its independent geometry/color regressions
+run in `cargo test -p sp-fidelity-wgpu outgoing_tests`; they deliberately differ
+from the original reference.
+
+FI source-level edge cases need no game or renderer inputs:
+
+```sh
+cargo test -p sp-fidelity-oracle --release --test frameinterpolation_edges -- --ignored --nocapture
+cargo test -p sp-fidelity-oracle --release --test frameinterpolation_passes outgoing_ground -- --ignored --nocapture
+cargo test -p sp-fidelity-oracle --release --test frameinterpolation_receding -- --ignored --nocapture
+cargo test -p sp-fidelity-oracle --release --test frameinterpolation_seam -- --ignored --nocapture
+```
+
+The first reproduces the original padded-thread bug as a negative control and
+checks that the port excludes false primary vectors. The second diagnoses the
+original outgoing-ground limitation with an analytically projected plane,
+independent original history, and single-pass motion-field/optical-flow controls.
+It reports strict full-sequence differences separately; its passing diagnostic
+does **not** claim those differences are acceptable or that the artifact is fixed.
+The receding-plane fixture isolates holes between primary splats. The seam
+fixtures reproduce the original mirror and uniform-illumination limitations,
+require exact output parity with unchanged HLSL, and preserve diffuse controls
+with deliberately wrong optical flow. Passing these diagnostics means the
+original defect was reproduced faithfully, **not** that the color seam is fixed.
+See SDK-P33 and SDK-P34 in the conformance record.
+
+A smaller [standalone C++/Vulkan reproduction](repro/frameinterpolation_edges/README.md)
+includes AMD's unchanged game-field HLSL directly. It needs no Rust port, game,
+capture, or full SDK build. It covers zero-filled and allocated nonzero padding,
+valid interior motion, and the analytic plane's outgoing-vector range deficit.
+Its `--color` mode also isolates interpolation with analytic motion and color
+callbacks, including diffuse negative controls. The directory includes upstream
+issue/PR text and a minimal HLSL bounds patch. The field-only reproduction is
+distinct from the complete-sequence diagnostic above.
 
 ## Pass tests before the host
 
@@ -150,7 +198,7 @@ After exporting the variants below, run the GPU comparisons separately:
 cargo test -p sp-fidelity-oracle --release --test fsr3upscaler_passes -- --ignored --nocapture
 cargo test -p sp-fidelity-oracle --release --test opticalflow_passes -- --ignored --nocapture
 cargo test -p sp-fidelity-oracle --release --test frameinterpolation_passes -- --ignored --nocapture
-cargo run -p sp-fidelity-wgpu --example fsr3
+cargo run -p sp-fidelity-wgpu --features frame-generation --example fsr3
 ```
 
 The comparisons retain per-pass captures for both identical-input replay and

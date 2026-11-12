@@ -69,6 +69,19 @@ const MODULES: &[(&str, &str)] = modules![
     "fsr3upscaler/ffx_fsr3upscaler_shading_change_pyramid.wgsl",
     "fsr3upscaler/ffx_fsr3upscaler_shading_change_pyramid_pass.wgsl",
     "fsr3upscaler/ffx_fsr3upscaler_upsample.wgsl",
+    "fsr3upscaler/ffx_fsr3upscaler_rcas.wgsl",
+];
+
+#[cfg(feature = "frame-generation")]
+const FRAME_GENERATION_MODULES: &[(&str, &str)] = modules![
+    "frameinterpolation/ffx_frameinterpolation_outgoing_common.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_depth_connectivity.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_outgoing_history_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_outgoing_candidates_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_outgoing_resolve_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_outgoing_distortion_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_current_candidates_pass.wgsl",
+    "frameinterpolation/ffx_frameinterpolation_current_resolve_pass.wgsl",
     "frameinterpolation/ffx_frameinterpolation.wgsl",
     "frameinterpolation/ffx_frameinterpolation_callbacks.wgsl",
     "frameinterpolation/ffx_frameinterpolation_common.wgsl",
@@ -111,8 +124,9 @@ const MODULES: &[(&str, &str)] = modules![
     "opticalflow/ffx_opticalflow_generate_scd_histogram_pass.wgsl",
     "opticalflow/ffx_opticalflow_prepare_luma_pass.wgsl",
     "opticalflow/ffx_opticalflow_scale_optical_flow_advanced_pass_v5.wgsl",
-    "fsr3upscaler/ffx_fsr3upscaler_rcas.wgsl",
 ];
+#[cfg(not(feature = "frame-generation"))]
+const FRAME_GENERATION_MODULES: &[(&str, &str)] = &[];
 
 /// The compile defines an effect's SDK shader build gives every pass and
 /// permutation, by pass shader-name prefix: FSR2's `FSR2_BASE_ARGS`
@@ -153,6 +167,7 @@ const EFFECT_DEFINES: &[(&str, &[(&str, &str)])] = &[
             ("FFX_FSR3UPSCALER_OPTION_UPSAMPLE_USE_LANCZOS_TYPE", "2"),
         ],
     ),
+    #[cfg(feature = "frame-generation")]
     (
         "ffx_frameinterpolation_",
         &[
@@ -209,6 +224,7 @@ pub fn ffx_get_wgsl_source(blob: &FfxShaderBlob) -> Option<String> {
     let file = format!("{}.wgsl", blob.shader_name);
     let (module, _) = MODULES
         .iter()
+        .chain(FRAME_GENERATION_MODULES)
         .find(|(path, _)| path.rsplit('/').next() == Some(file.as_str()))?;
     let permutation = blob.permutation;
     let mut preprocessor = Preprocessor {
@@ -534,6 +550,7 @@ impl Preprocessor {
     fn include(&mut self, path: &str) {
         let source = MODULES
             .iter()
+            .chain(FRAME_GENERATION_MODULES)
             .find(|(name, _)| *name == path)
             .unwrap_or_else(|| panic!("unknown WGSL module {path}"))
             .1;

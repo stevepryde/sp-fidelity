@@ -35,13 +35,16 @@ pub type FfxPass = u32;
 pub type FfxInterfaceRef = Rc<RefCell<dyn FfxInterface>>;
 
 /// `FfxPresentCallbackFunc`; a closure owns the SDK's callback context.
+#[cfg(feature = "frame-generation")]
 pub type FfxPresentCallbackFunc =
     Rc<dyn Fn(&FfxPresentCallbackDescription) -> Result<(), FfxErrorCode>>;
 /// `FfxFrameGenerationDispatchFunc`; a closure owns the SDK's callback context.
+#[cfg(feature = "frame-generation")]
 pub type FfxFrameGenerationDispatchFunc =
     Rc<dyn Fn(&FfxFrameGenerationDispatchDescription) -> Result<(), FfxErrorCode>>;
 
 /// `FfxFrameGenerationConfig`. Callback context pointers become closure captures.
+#[cfg(feature = "frame-generation")]
 #[derive(Clone, Default)]
 pub struct FfxFrameGenerationConfig {
     pub swap_chain: FfxSwapchain,
@@ -62,6 +65,7 @@ pub struct FfxFrameGenerationConfig {
 pub trait FfxInterface {
     /// `fpSwapChainConfigureFrameGeneration`. Compute-only backends need not
     /// implement presentation; the SDK's unsupported operation is returned.
+    #[cfg(feature = "frame-generation")]
     fn swap_chain_configure_frame_generation(
         &mut self,
         _config: &FfxFrameGenerationConfig,

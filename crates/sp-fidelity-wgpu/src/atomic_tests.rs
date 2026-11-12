@@ -68,7 +68,9 @@ fn buffer_backed_atomic_texture_preserves_every_add_across_registrations() {
         effect: FfxEffect::OpticalFlow,
         pass: 0,
         pipeline,
+        #[cfg(feature = "frame-generation")]
         output_source: None,
+        #[cfg(feature = "frame-generation")]
         spd_epilogue: None,
         layout,
         entries: HashMap::from([(64, entry)]),

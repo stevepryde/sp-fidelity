@@ -49,6 +49,8 @@ fn sequence(recorder: &Rc<RefCell<Recorder>>, w: &mut Words) {
     if created.is_err() {
         return;
     }
+    // SDK host parity selects original reconstruction; correction has separate GPU tests.
+    ffx_frame_interpolation_set_outgoing_reconstruction(&mut context, false).unwrap();
     recorder.borrow_mut().events.push(json!([
         "version",
         ffx_frame_interpolation_get_effect_version()

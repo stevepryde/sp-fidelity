@@ -237,6 +237,96 @@ const FRAMEINTERPOLATION_DEBUG_VIEW_PERMUTATION_INFO: PermutationInfo = Permutat
     sampler: &[binding("s_LinearClamp", 0, 1, 0)],
 };
 
+// SDK-P34: explicit binding tables for Rust-only correction passes.
+const OUTGOING_HISTORY: PermutationInfo = PermutationInfo {
+    cbv: &[binding("cbFI", 0, 1, 0)],
+    srv_texture: &[
+        binding("r_input_depth", 0, 1, 0),
+        binding("r_input_motion_vectors", 1, 1, 0),
+    ],
+    uav_texture: &[
+        binding("rw_outgoing_depth", 0, 1, 0),
+        binding("rw_outgoing_motion", 1, 1, 0),
+    ],
+    srv_buffer: &[],
+    uav_buffer: &[],
+    sampler: &[],
+};
+const OUTGOING_CANDIDATES: PermutationInfo = PermutationInfo {
+    cbv: &[binding("cbFI", 0, 1, 0), binding("cbOutgoing", 1, 1, 0)],
+    srv_texture: &[
+        binding("r_outgoing_depth", 0, 1, 0),
+        binding("r_outgoing_motion", 1, 1, 0),
+    ],
+    uav_texture: &[
+        binding("rw_game_motion_vector_field_x", 0, 1, 0),
+        binding("rw_game_motion_vector_field_y", 1, 1, 0),
+    ],
+    srv_buffer: &[],
+    uav_buffer: &[],
+    sampler: &[],
+};
+const OUTGOING_RESOLVE: PermutationInfo = PermutationInfo {
+    cbv: &[binding("cbFI", 0, 1, 0)],
+    srv_texture: &[
+        binding("r_outgoing_x", 0, 1, 0),
+        binding("r_outgoing_y", 1, 1, 0),
+        binding("r_outgoing_distortion", 2, 1, 0),
+        binding("r_input_distortion_field", 3, 1, 0),
+    ],
+    uav_texture: &[
+        binding("rw_game_motion_vector_field_x", 0, 1, 0),
+        binding("rw_game_motion_vector_field_y", 1, 1, 0),
+        binding("rw_disocclusion_mask", 2, 1, 0),
+    ],
+    srv_buffer: &[],
+    uav_buffer: &[],
+    sampler: &[binding("s_LinearClamp", 0, 1, 0)],
+};
+const OUTGOING_DISTORTION: PermutationInfo = PermutationInfo {
+    cbv: &[binding("cbFI", 0, 1, 0)],
+    srv_texture: &[binding("r_input_distortion_field", 0, 1, 0)],
+    uav_texture: &[binding("rw_outgoing_distortion", 0, 1, 0)],
+    srv_buffer: &[],
+    uav_buffer: &[],
+    sampler: &[binding("s_LinearClamp", 0, 1, 0)],
+};
+
+const CURRENT_CANDIDATES: PermutationInfo = PermutationInfo {
+    cbv: &[binding("cbFI", 0, 1, 0), binding("cbOutgoing", 1, 1, 0)],
+    srv_texture: &[
+        binding("r_outgoing_depth", 0, 1, 0),
+        binding("r_outgoing_motion", 1, 1, 0),
+        binding("r_input_distortion_field", 2, 1, 0),
+    ],
+    uav_texture: &[
+        binding("rw_game_motion_vector_field_x", 0, 1, 0),
+        binding("rw_game_motion_vector_field_y", 1, 1, 0),
+    ],
+    srv_buffer: &[],
+    uav_buffer: &[],
+    sampler: &[binding("s_LinearClamp", 0, 1, 0)],
+};
+const CURRENT_RESOLVE: PermutationInfo = PermutationInfo {
+    cbv: &[binding("cbFI", 0, 1, 0), binding("cbOutgoing", 1, 1, 0)],
+    srv_texture: &[
+        binding("r_outgoing_x", 0, 1, 0),
+        binding("r_outgoing_y", 1, 1, 0),
+        binding("r_outgoing_distortion", 2, 1, 0),
+        binding("r_input_distortion_field", 3, 1, 0),
+        binding("r_outgoing_depth", 4, 1, 0),
+        binding("r_outgoing_motion", 5, 1, 0),
+    ],
+    uav_texture: &[
+        binding("rw_game_motion_vector_field_x", 0, 1, 0),
+        binding("rw_game_motion_vector_field_y", 1, 1, 0),
+        binding("rw_reconstructed_depth_interpolated_frame", 2, 1, 0),
+    ],
+    srv_buffer: &[],
+    uav_buffer: &[],
+    sampler: &[binding("s_LinearClamp", 0, 1, 0)],
+};
+
 const PERMUTATION_KEY_OPTIONS: &[&str] = &[
     "FFX_FRAMEINTERPOLATION_OPTION_LOW_RES_MOTION_VECTORS",
     "FFX_FRAMEINTERPOLATION_OPTION_JITTER_MOTION_VECTORS",
@@ -331,6 +421,30 @@ pub fn frame_interpolation_get_permutation_blob_by_index(
         id if id == FfxFrameInterpolationPass::DebugView as FfxPass => (
             "ffx_frameinterpolation_debug_view_pass",
             &FRAMEINTERPOLATION_DEBUG_VIEW_PERMUTATION_INFO,
+        ),
+        id if id == FfxFrameInterpolationPass::RetainOutgoingGeometry as FfxPass => (
+            "ffx_frameinterpolation_outgoing_history_pass",
+            &OUTGOING_HISTORY,
+        ),
+        id if id == FfxFrameInterpolationPass::ReconstructOutgoingGeometry as FfxPass => (
+            "ffx_frameinterpolation_outgoing_candidates_pass",
+            &OUTGOING_CANDIDATES,
+        ),
+        id if id == FfxFrameInterpolationPass::ResolveOutgoingGeometry as FfxPass => (
+            "ffx_frameinterpolation_outgoing_resolve_pass",
+            &OUTGOING_RESOLVE,
+        ),
+        id if id == FfxFrameInterpolationPass::RetainOutgoingDistortion as FfxPass => (
+            "ffx_frameinterpolation_outgoing_distortion_pass",
+            &OUTGOING_DISTORTION,
+        ),
+        id if id == FfxFrameInterpolationPass::ReconstructCurrentGeometry as FfxPass => (
+            "ffx_frameinterpolation_current_candidates_pass",
+            &CURRENT_CANDIDATES,
+        ),
+        id if id == FfxFrameInterpolationPass::ResolveCurrentGeometry as FfxPass => (
+            "ffx_frameinterpolation_current_resolve_pass",
+            &CURRENT_RESOLVE,
         ),
         _ => {
             ffx_assert_fail!("Should never reach here.");

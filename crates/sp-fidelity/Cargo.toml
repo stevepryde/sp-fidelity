@@ -11,5 +11,9 @@ keywords = ["fsr2", "fidelityfx", "wgpu", "upscaling", "graphics"]
 categories = ["graphics", "rendering"]
 include = ["src/**", "shaders/**", "vendor/**", "LICENSE.txt", "README.md", "CONFORMANCE.md"]
 
+[features]
+default = []
+frame-generation = []
+
 [lints.rust]
 unsafe_code = "forbid"

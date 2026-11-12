@@ -1,6 +1,10 @@
 //! Headless FSR 3.1.4: upscale a static scene, prepare frame generation, and
+//!
+//! Frame generation is unsupported because of unresolved motion artifacts.
+//! Its code is retained for diagnostics; use standalone FSR2/FSR3 upscaling
+//! for supported application integration.
 //! interpolate through the same callback a presentation integration receives.
-//! Run with `cargo run -p sp-fidelity-wgpu --example fsr3`.
+//! Run with `cargo run -p sp-fidelity-wgpu --features frame-generation --example fsr3`.
 use sp_fidelity::fsr3::*;
 use sp_fidelity::interface::FfxFrameGenerationConfig;
 use sp_fidelity::types::*;

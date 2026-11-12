@@ -1,4 +1,8 @@
 //! wgpu backend for the [`sp_fidelity`] port: an implementation of the SDK's
+//!
+//! Frame generation is unsupported because of unresolved motion artifacts.
+//! Its code is retained for diagnostics; use standalone FSR2/FSR3 upscaling
+//! for supported application integration.
 //! backend function table, [`FfxInterface`], as AMD's DX12 and Vulkan backends
 //! (`sdk/src/backends/{dx12,vk}`) implement `FfxInterface` for their APIs.
 //!
@@ -33,6 +37,7 @@
 //! [`FfxWgpuBackend::take_job_error`]). Nothing else differs from the SDK.
 use sp_fidelity::blob_accessors::ffx_get_permutation_blob_by_index;
 use sp_fidelity::error::*;
+#[cfg(feature = "frame-generation")]
 use sp_fidelity::frameinterpolation::FfxFrameInterpolationPass;
 use sp_fidelity::interface::*;
 use sp_fidelity::shaders::*;
@@ -46,6 +51,9 @@ use wgpu::util::DeviceExt;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod atomic_tests;
 mod dispatch_grid;
+#[cfg(all(test, feature = "frame-generation", not(target_arch = "wasm32")))]
+mod outgoing_tests;
+#[cfg(feature = "frame-generation")]
 pub mod presentation;
 pub mod readback;
 
@@ -124,6 +132,7 @@ pub type FfxWgpuJobObserver = Box<dyn FnMut(&mut FfxWgpuJobObservation<'_>)>;
 
 /// Application presentation adapter for the SDK frame-generation configuration.
 /// The application owns its surface, presentation timing, and callback scheduling.
+#[cfg(feature = "frame-generation")]
 pub type FfxWgpuFrameGenerationConfigurator =
     Box<dyn FnMut(&sp_fidelity::interface::FfxFrameGenerationConfig) -> Result<(), FfxErrorCode>>;
 
@@ -191,7 +200,9 @@ struct Pipeline {
     effect: FfxEffect,
     pass: FfxPass,
     pipeline: wgpu::ComputePipeline,
+    #[cfg(feature = "frame-generation")]
     output_source: Option<String>,
+    #[cfg(feature = "frame-generation")]
     spd_epilogue: Option<wgpu::ComputePipeline>,
     layout: wgpu::BindGroupLayout,
     /// Layout entries by WGSL binding.
@@ -258,6 +269,7 @@ pub struct FfxWgpuBackend {
     grid: dispatch_grid::DispatchGrid,
     clears: HashMap<wgpu::TextureFormat, wgpu::ComputePipeline>,
     texture_buffers: Vec<TextureBuffer>,
+    #[cfg(feature = "frame-generation")]
     output_variants: HashMap<(usize, wgpu::TextureFormat), usize>,
     texture_buffer_pipelines: HashMap<wgpu::TextureFormat, TextureBufferPipelines>,
     observer: Option<FfxWgpuJobObserver>,
@@ -265,6 +277,7 @@ pub struct FfxWgpuBackend {
     /// The first job that stopped `execute_gpu_jobs` since
     /// `take_job_error`, whose result the SDK's dispatch ignores.
     job_error: Option<FfxWgpuJobError>,
+    #[cfg(feature = "frame-generation")]
     frame_generation_configurator: Option<FfxWgpuFrameGenerationConfigurator>,
 }
 
@@ -402,11 +415,13 @@ impl FfxWgpuBackend {
             grid: dispatch_grid::DispatchGrid::new(device),
             clears: HashMap::new(),
             texture_buffers: Vec::new(),
+            #[cfg(feature = "frame-generation")]
             output_variants: HashMap::new(),
             texture_buffer_pipelines: HashMap::new(),
             observer: None,
             pass_timestamps: None,
             job_error: None,
+            #[cfg(feature = "frame-generation")]
             frame_generation_configurator: None,
         }
     }
@@ -520,6 +535,7 @@ impl FfxWgpuBackend {
     /// presentation scheduler. wgpu surfaces do not expose the SDK's DXGI or
     /// Vulkan proxy-swapchain interface. Without an adapter configuration
     /// returns `FFX_ERROR_BACKEND_API_ERROR`.
+    #[cfg(feature = "frame-generation")]
     pub fn set_frame_generation_configurator(
         &mut self,
         configurator: Option<FfxWgpuFrameGenerationConfigurator>,
@@ -790,9 +806,13 @@ impl FfxWgpuBackend {
             let mip = match (&object, as_buffer) {
                 (Object::Buffer(_), true) => None,
                 (Object::Texture(_), false) => {
+                    #[cfg(feature = "frame-generation")]
                     use sp_fidelity::frameinterpolation::FfxFrameInterpolationPass as Pass;
                     // FI declares all twelve SPD mip UAVs. Preserve the requested
                     // mip here so absent, unused mips get distinct inert views.
+                    #[cfg(not(feature = "frame-generation"))]
+                    let fi_spd = false;
+                    #[cfg(feature = "frame-generation")]
                     let fi_spd = pipeline.effect == FfxEffect::FrameInterpolation
                         && (pipeline.pass == Pass::InpaintingPyramid as u32
                             || pipeline.pass == Pass::GameVectorFieldInpaintingPyramid as u32);
@@ -1024,7 +1044,11 @@ impl FfxWgpuBackend {
         upload: Option<&wgpu::Buffer>,
         constants: &[StagedConstants],
     ) -> Result<(), JobFailure> {
+        #[cfg(feature = "frame-generation")]
         let output = self.output_format(job)?;
+        #[cfg(not(feature = "frame-generation"))]
+        let pipeline = self.pipeline(&job.pipeline)?;
+        #[cfg(feature = "frame-generation")]
         let pipeline = if let Some(format) = output
             && let Some(index) = self.output_variants.get(&(job.pipeline.pipeline, format))
         {
@@ -1080,6 +1104,9 @@ impl FfxWgpuBackend {
             pass.set_bind_group(1, grid_group, &[]);
             pass.dispatch_workgroups_indirect(&self.grid.arguments, 0);
         } else {
+            #[cfg(not(feature = "frame-generation"))]
+            let epilogue: Option<&wgpu::ComputePipeline> = None;
+            #[cfg(feature = "frame-generation")]
             let epilogue = pipeline.spd_epilogue.as_ref().filter(|_| {
                 state
                     .constant_buffer_bindings
@@ -1124,6 +1151,7 @@ impl FfxWgpuBackend {
         Ok(())
     }
 
+    #[cfg(feature = "frame-generation")]
     fn output_format(
         &self,
         job: &FfxComputeJobDescription,
@@ -1143,6 +1171,7 @@ impl FfxWgpuBackend {
         Ok(Some(self.texture(resource)?.format()))
     }
 
+    #[cfg(feature = "frame-generation")]
     fn prepare_output_pipeline(
         &mut self,
         job: &FfxComputeJobDescription,
@@ -1621,6 +1650,7 @@ impl FfxWgpuBackend {
 }
 
 impl FfxInterface for FfxWgpuBackend {
+    #[cfg(feature = "frame-generation")]
     fn swap_chain_configure_frame_generation(
         &mut self,
         config: &sp_fidelity::interface::FfxFrameGenerationConfig,
@@ -2036,6 +2066,7 @@ impl FfxInterface for FfxWgpuBackend {
                 bind_group_layouts: &groups,
                 immediate_size: 0,
             });
+        #[cfg(feature = "frame-generation")]
         let output_source = (effect == FfxEffect::FrameInterpolation
             && source.contains("var rw_output:"))
         .then(|| source.clone());
@@ -2052,6 +2083,9 @@ impl FfxInterface for FfxWgpuBackend {
                     .into(),
                 ),
             });
+        #[cfg(not(feature = "frame-generation"))]
+        let split_spd = false;
+        #[cfg(feature = "frame-generation")]
         let split_spd = effect == FfxEffect::FrameInterpolation
             && (pass == FfxFrameInterpolationPass::InpaintingPyramid as u32
                 || pass == FfxFrameInterpolationPass::GameVectorFieldInpaintingPyramid as u32);
@@ -2068,6 +2102,7 @@ impl FfxInterface for FfxWgpuBackend {
                 },
                 cache: None,
             });
+        #[cfg(feature = "frame-generation")]
         let spd_epilogue = split_spd.then(|| {
             self.device
                 .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
@@ -2128,7 +2163,9 @@ impl FfxInterface for FfxWgpuBackend {
             effect,
             pass,
             pipeline,
+            #[cfg(feature = "frame-generation")]
             output_source,
+            #[cfg(feature = "frame-generation")]
             spd_epilogue,
             layout,
             entries,
@@ -2197,6 +2234,7 @@ impl FfxInterface for FfxWgpuBackend {
         {
             *slot = None;
         }
+        #[cfg(feature = "frame-generation")]
         self.output_variants.retain(|(original, _), variant| {
             if *original == pipeline.pipeline {
                 self.pipelines[*variant] = None;
@@ -2233,6 +2271,7 @@ impl FfxInterface for FfxWgpuBackend {
         // holds nothing it could not record.
         let mut failure = None;
         for (job, constants) in jobs.iter().zip(&constants) {
+            #[cfg(feature = "frame-generation")]
             if let FfxGpuJobDescriptor::Compute(compute) = &job.descriptor
                 && let Err(error) = self.prepare_output_pipeline(compute)
             {

@@ -238,6 +238,7 @@ fn rcas_case(gpu: &gpu::Gpu, options: u32, display: [u32; 2]) -> compare::Compar
     // application's output, and reads its exposure (or the SDK's 1x1 default).
     let resources = [
         Resource {
+            r#type: FfxResourceType::Texture2D,
             name: "FSR2_InternalUpscaled1",
             format: FfxSurfaceFormat::R16G16B16A16Float,
             width,
@@ -250,6 +251,7 @@ fn rcas_case(gpu: &gpu::Gpu, options: u32, display: [u32; 2]) -> compare::Compar
             ),
         },
         Resource {
+            r#type: FfxResourceType::Texture2D,
             name: "Exposure",
             format: FfxSurfaceFormat::R32G32Float,
             width: 1,
@@ -258,6 +260,7 @@ fn rcas_case(gpu: &gpu::Gpu, options: u32, display: [u32; 2]) -> compare::Compar
             created: None,
         },
         Resource {
+            r#type: FfxResourceType::Texture2D,
             name: "Output",
             format: FfxSurfaceFormat::R16G16B16A16Float,
             width,
@@ -1025,6 +1028,7 @@ fn accumulate_case(gpu: &gpu::Gpu, case: &AccumulateCase) -> AccumulateResult {
         resources.push(if let Some(e) = created {
             let (width, height) = (number(&e[4]), number(&e[5]));
             Resource {
+                r#type: FfxResourceType::Texture2D,
                 name,
                 format: surface_format(number(&e[3])),
                 width,
@@ -1044,6 +1048,7 @@ fn accumulate_case(gpu: &gpu::Gpu, case: &AccumulateCase) -> AccumulateResult {
                 name => panic!("unknown application resource {name}"),
             };
             Resource {
+                r#type: FfxResourceType::Texture2D,
                 name,
                 format,
                 width,
@@ -1971,6 +1976,7 @@ fn resource(
     created: Option<FfxResourceUsage>,
 ) -> Resource {
     Resource {
+        r#type: FfxResourceType::Texture2D,
         name,
         format,
         width,

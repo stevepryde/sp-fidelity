@@ -1,5 +1,10 @@
 # sp-fidelity-wgpu
 
+Frame generation is experimental and unsupported because visual artifacts remain.
+It is disabled by default behind `frame-generation`.
+[C++ reproductions](https://github.com/stevepryde/sp-fidelity/tree/main/crates/sp-fidelity-oracle/repro/frameinterpolation_edges) are retained and fixes are welcome;
+no further frame-generation development is planned.
+
 The wgpu backend of the [`sp-fidelity`](https://github.com/stevepryde/sp-fidelity/blob/main/crates/sp-fidelity/README.md) port: an
 implementation of the SDK's `FfxInterface`, as AMD's DX12 and Vulkan backends
 are. The port was produced entirely using AI coding agents as a 1:1 port
@@ -81,121 +86,26 @@ is destroyed.
 `set_fp16_supported(false)` reports a device without FP16 so contexts created
 afterwards use the FP32 permutations.
 
-## Frame generation
+## Experimental frame generation
 
-`cargo run -p sp-fidelity-wgpu --example fsr3` runs four combined upscale and
-frame-generation frames, including the configuration callback and an RGBA8
-interpolated output. It reads the result back from the GPU.
+The `frame-generation` feature enables the core generation APIs and this
+backend's `presentation` module and configuration callback. It forwards
+`sp-fidelity/frame-generation`; upscaling needs neither feature.
 
-Install `set_frame_generation_configurator(Some(Box::new(...)))` to connect
-FSR3 configuration to your presentation scheduler. The closure receives the
-SDK's `FfxFrameGenerationConfig`, including the generation and presentation
-callbacks and frame ID. Store or apply it, then call generation when the input
-frame and its prepare data are ready. Without this hook, configuration returns
-`FFX_ERROR_BACKEND_API_ERROR`. Contexts, backend handles, and callbacks belong
-to their creating thread. The native presentation adapter below installs this
-hook and provides AMD's composition and pacing; use a custom hook only when
-supplying your own scheduler.
-
-Caller-created R32Uint textures used for reconstructed depth must include
-`STORAGE_ATOMIC` as well as `STORAGE_BINDING`. Textures created through the
-backend's SDK resource descriptions get this usage automatically.
-
-Use storage-capable typed color formats for frame-generation resources.
-BGRA8 storage additionally requires `wgpu::Features::BGRA8UNORM_STORAGE` on
-the device. Typeless formats have no wgpu equivalent, and sRGB storage formats
-are unavailable in WGSL; use linear-format storage with the SDK's explicit
-backbuffer transfer function and let the application handle presentation.
-
-
-## Native presentation
-
-`presentation::FrameInterpolationSwapchain` ports the SDK's presentation
-behavior using its game-queue composition mode. It calls generation and custom
-composition on the creating thread, observes GPU completion on a pacing thread,
-and acquires/presents generated pairs on a separate worker. Default real-only
-composition goes directly into the acquired surface on the creating thread,
-with one submission and no CPU wait for GPU completion. Generated pairs use
-queue ordering for surface copies and retain completion-based pacing. The application retains its window
-and event loop. See [PRESENTATION.md](../../PRESENTATION.md) for the contract.
-
-```rust,ignore
-use sp_fidelity_wgpu::presentation::{FrameInterpolationSwapchain, SurfaceTarget};
-let mut presenter = FrameInterpolationSwapchain::new(
-    backend.clone(), &queue, SurfaceTarget::new(surface.clone()), &surface_config,
-)?;
-// Keep one callback handle per live context, rather than recreating it each frame.
-let generation = ffx_fsr3_get_frame_generation_callback(&context)?;
-// Each frame: configure FSR3 with generation.clone() and the frame ID,
-// record upscale + prepare, then render/transfer the real image to display_color.
-presenter.register_ui_resource(Some(&ui), 0); // straight alpha
-presenter.present(command_list, &display_color)?; // consumes/submits SDK encoder
-// On resize: drain before destroying/recreating SDK context resources.
-presenter.wait_for_presents()?;
-presenter.resize(&new_surface_config)?;
-// At exit:
-presenter.shutdown()?;
+```toml
+sp-fidelity-wgpu = { version = "0.3.0", features = ["frame-generation"] }
 ```
 
-The complete [fsr3_present example](examples/fsr3_present.rs) supplies motion,
-depth, real-image output transfer, UI and the composite configuration, and
-handles resize and transient surface failures. Run it with `--frames 120` for
-a finite lifecycle exercise on an active display, or without that argument to
-keep it running. The finite run fails if no surface presentation completes
-(for example, when macOS keeps the window fully occluded).
+Contributor examples:
 
-- `present` dispatches the configured generation callback, then presents the
-  generated image followed by the real image. `only_present_interpolated`
-  suppresses the real image when generation succeeds. A generation error is
-  returned and the real image is still queued. Generation disabled still
-  composes UI and presents the real image.
-- Standalone interpolation uses `configure_frame_generation` and can provide
-  an already recorded output through `present_with_interpolation`. Both paths
-  submit on the same queue as the caller's rendering. No second SDK context or
-  thread-safe SDK wrapper is required.
-- Inputs are single-sampled 2D images at the configured display size. Present
-  color requires `TEXTURE_BINDING | COPY_SRC`; UI requires `TEXTURE_BINDING`.
-  Supply display-encoded color in a non-sRGB typed texture (e.g. RGBA8Unorm),
-  as the SDK uses raw backbuffer values. Set `set_transfer_function` to the
-  corresponding SDK transfer function and luminance range. Surface sRGB
-  formats use a linear view to avoid double encoding. BGRA surfaces use RGBA
-  intermediate storage, avoiding a BGRA storage-feature requirement.
-- `UI_PREMULTIPLIED_ALPHA` selects AMD's premultiplied formula. Both UI
-  registration modes, including `UI_INTERNAL_DOUBLE_BUFFERING`, submit their
-  input reads before `present` returns; subsequent updates on this same queue
-  cannot change already queued images. Do not explicitly destroy textures
-  while their GPU reads are pending.
-- Custom `present_callback` runs on the owner thread, once per output.
-  `ffx_texture_wgpu` resolves its live resource handles and
-  `ffx_command_encoder_wgpu` allows recording into its command list. The
-  callback must not take/submit that encoder. All external SDK resource handles
-  expire when a command list is taken; register HUD-less inputs in the same
-  live scope as that frame's prepare/configuration/present.
-- Callback identity, enablement and async-policy changes drain pending work.
-  `reset_history` resets generation and pacing after a discontinuity. Keep
-  callback `Rc` handles stable across frames. wgpu has one queue, so
-  `allow_async_workloads` cannot enable native async compute or queue priority.
-- `pacing::FramePacingTuning` retains AMD's safety/variance defaults and spin
-  controls. `take_reports` drains at most the latest two retired frame reports,
-  recording completion and actual presentation-call times. These are not
-  scanout timestamps or measured display FPS.
-- Surface `occluded`/`timeout` errors retire the affected frame and allow a
-  later retry; `lost`/`outdated` require `resize` to reconfigure. Real-only acquisition errors return immediately, leaving the input list live.
-  Worker errors arrive when a slot is reused or when `wait_for_presents` drains it. An error before
-  input consumption leaves the command list live; on error, take it if still
-  present and submit or discard it. A consumed list returns `None`. Drain
-  pending work before destroying SDK contexts. `shutdown` joins both workers;
-  dropping the adapter cancels remaining presentation and joins them.
+```sh
+cargo run -p sp-fidelity-wgpu --features frame-generation --example fsr3
+cargo run -p sp-fidelity-wgpu --features frame-generation --example fsr3_present -- --frames 120
+```
 
-`PresentationTarget` is the presentation boundary for other native integrations.
-Its initial `configure` runs during construction; later configuration and
-generated-pair acquisition run on the presenter worker. Default real-only
-acquisition/presentation run on the creating thread. A `PresentFrame` owns the acquired
-texture and its one-shot presentation operation. `SurfaceTarget` implements
-this for a real surface. There is no windowing dependency in the runtime;
-winit is used only by the example. The threaded adapter is unavailable on
-WASM. See [conformance differences](../sp-fidelity/CONFORMANCE.md#native-presentation-adaptation).
-
+The retained [presentation contract](https://github.com/stevepryde/sp-fidelity/blob/main/PRESENTATION.md)
+and [conformance record](https://github.com/stevepryde/sp-fidelity/blob/main/crates/sp-fidelity/CONFORMANCE.md)
+describe resource ownership, pacing, platform adaptations and known limitations.
 
 ## Features
 

@@ -48,5 +48,10 @@
 @compute @workgroup_size(FFX_FRAMEINTERPOLATION_THREAD_GROUP_WIDTH, FFX_FRAMEINTERPOLATION_THREAD_GROUP_HEIGHT, FFX_FRAMEINTERPOLATION_THREAD_GROUP_DEPTH)
 fn CS(@builtin(global_invocation_id) id: FfxUInt32x3)
 {
+    // SDK-P33: rounded dispatches include pixels with no depth or motion.
+    // Their zero-valued loads can splat primary vectors onto the valid edge.
+    if (any(id.xy >= FfxUInt32x2(RenderSize()))) {
+        return;
+    }
     computeGameFieldMvs(FfxInt32x2(id.xy));
 }

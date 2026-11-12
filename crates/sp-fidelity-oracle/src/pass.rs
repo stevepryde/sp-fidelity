@@ -48,6 +48,8 @@ use wgpu::util::DeviceExt;
 
 /// A texture a job binds.
 pub struct Resource {
+    /// Buffers (width in bytes) are supported by `run_backend`.
+    pub r#type: FfxResourceType,
     /// The name the host creates or registers it with.
     pub name: &'static str,
     pub format: FfxSurfaceFormat,
@@ -121,7 +123,7 @@ fn write_trace(directory: &Path, resources: &[Resource], pipeline: &Pipeline, jo
         trace.push(json!([
             "resource",
             r.name,
-            FfxResourceType::Texture2D as u32,
+            r.r#type as u32,
             r.format as u32,
             r.width,
             r.height,
@@ -472,6 +474,7 @@ pub fn run_backend(
     let device = &gpu.device;
     let ffx_effect = match effect.name {
         "fsr2" => FfxEffect::Fsr2,
+        "frameinterpolation" => FfxEffect::FrameInterpolation,
         name => panic!("no SDK effect for {name}"),
     };
     assert_eq!(
@@ -526,7 +529,7 @@ pub fn run_backend(
                     &FfxCreateResourceDescription {
                         heap_type: FfxHeapType::Default,
                         resource_description: FfxResourceDescription {
-                            r#type: FfxResourceType::Texture2D,
+                            r#type: r.r#type,
                             format: r.format,
                             width: r.width,
                             height: r.height,
@@ -637,6 +640,22 @@ pub fn run_backend(
                 .map(|b| {
                     let (resource, mip) = bound(true, &b.name);
                     FfxTextureUAV { mip, resource }
+                })
+                .collect(),
+            srv_buffers: state
+                .srv_buffer_bindings
+                .iter()
+                .map(|b| FfxBufferSRV {
+                    resource: bound(false, &b.name).0,
+                    ..Default::default()
+                })
+                .collect(),
+            uav_buffers: state
+                .uav_buffer_bindings
+                .iter()
+                .map(|b| FfxBufferUAV {
+                    resource: bound(true, &b.name).0,
+                    ..Default::default()
                 })
                 .collect(),
             cbs: state
@@ -883,6 +902,15 @@ pub fn strict_variants(
         wgpu::naga::valid::Capabilities::all(),
     )
     .validate(&module)
+    .unwrap();
+    // Match wgpu's pipeline creation: resolve WGSL override defaults before
+    // exporting MSL (including the shared SPD shader's single-dispatch phase).
+    let (module, info) = wgpu::naga::back::pipeline_constants::process_overrides(
+        &module,
+        &info,
+        Some((wgpu::naga::ShaderStage::Compute, FFX_WGSL_ENTRY_POINT)),
+        &Default::default(),
+    )
     .unwrap();
     // wgpu-hal 30 metal/device.rs with default runtime checks
     // (`ShaderRuntimeChecks::checked`), at the language version its

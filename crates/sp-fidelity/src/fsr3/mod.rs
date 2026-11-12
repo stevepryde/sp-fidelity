@@ -1,5 +1,9 @@
 //! Port of `sdk/include/FidelityFX/host/ffx_fsr3.h` (SDK 1.1.4, FSR 3.1.4).
 //!
+//! Frame generation is unsupported because of unresolved motion artifacts.
+//! Its code is retained for diagnostics; use standalone FSR2/FSR3 upscaling
+//! for supported application integration.
+//!
 //! FSR3 composes the upscaler, optical flow, and frame interpolation contexts.
 //! The callback helper captures a weak reference to the context instead of the
 //! SDK's global raw context pointer. Callbacks require this thread, as does the

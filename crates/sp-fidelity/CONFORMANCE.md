@@ -1,5 +1,10 @@
 # SDK conformance record
 
+Frame generation is experimental and unsupported because visual artifacts remain.
+It is disabled by default behind `frame-generation`.
+[C++ reproductions](https://github.com/stevepryde/sp-fidelity/tree/main/crates/sp-fidelity-oracle/repro/frameinterpolation_edges) are retained and fixes are welcome;
+no further frame-generation development is planned.
+
 Authority: FidelityFX SDK 1.1.4, revision
 `c6efa6bf7f2027b3ec94f28578bb5965eabb9e55`, retained unedited in
 `vendor/sdk-1.1.4`. Evidence comes from the two oracles in
@@ -167,9 +172,14 @@ AMD's existing workgroup offset, with the original counter and workgroup count.
 The native oracle completes each tile before the next; only the final tile
 executes the unchanged upper-mip reduction. All other jobs, application inputs,
 and temporal histories follow the original C++ trace. This avoids importing
-port intermediates or duplicating AMD's reduction arithmetic. The 568 output
-dumps match exactly, with no tolerance or exception. This validates the WGSL
-backend's dispatch split, not AMD's complete supported DX12/Vulkan pipeline.
+port intermediates or duplicating AMD's reduction arithmetic. Before SDK-P33,
+the 568 output dumps matched unchanged HLSL exactly. With that bounds correction,
+the test uses a private copy of the original shader with only the same input-domain
+guard; both synchronous and asynchronous host modes match all 568 dumps exactly.
+The unmodified original remains the negative control in the isolated SDK-P33
+regression and ground-plane reproduction. No numeric tolerance is added for the
+corrected edge or its downstream effects. This validates the tested boundaries,
+not AMD's complete supported DX12/Vulkan pipeline.
 
 Optical flow exercises two 24-frame sequences, including odd dimensions,
 Texture1D allocation, all three transfer functions, resets, and nonzero
@@ -306,6 +316,170 @@ Adaptation IDs are stable and may have gaps.
 | SDK-P26 | Naga's Metal output keeps every WGSL loop as a bounded `while (true)` the Metal compiler does not unroll, and branches on `\|\|` | The pass preprocessor performs `FFX_UNROLL` wherever the SDK has it and on five more constant loops; `ffxWgslOutside` uses `\|`. Operations and their order are unchanged. See below. |
 | SDK-P27 | wgpu rejects a view of a mip the texture lacks | FSR2 binds the luminance pyramid's `rw_img_mip_shading_change` and `rw_img_mip_5` to mips 4 and 5 of `FSR2_ExposureMips` whatever its size (`ffx_fsr2.cpp:669–678, 998–1004`); below a 64-pixel maximum render size the texture lacks mip 5, and below 32 mip 4 too. The backend binds the texture's last mip, as AMD's Vulkan backend does (`sdk/src/backends/vk/ffx_vk.cpp:3769–3771` at the SDK revision; the DX12 backend, `sdk/src/backends/dx12/ffx_dx12.cpp:3052` at the SDK revision, indexes past the resource's own descriptors). SPD stores to mip 4 or 5 only when its mip count, from the render size, reaches it (`ffx_fsr2_compute_luminance_pyramid.h:70–72`, `ffx_spd.h:68`), so nothing is written through a substituted view (render size within the maximum), and sizes that have the mips bind them unchanged. |
 | SDK-P28 | wgpu reports an object it rejects when it is created, but the error of recording it only when the encoder finishes, and then the whole encoder, with the application's own work in it, is invalid | A clear or compute job creates its new views and bind group inside validation and out-of-memory error scopes and, if wgpu rejects any, fails before recording them with `FFX_ERROR_BACKEND_API_ERROR`, the code AMD's DX12 backend returns for a failed job (`sdk/src/backends/dx12/ffx_dx12.cpp:3501–3504` at the SDK revision), and wgpu's message. `fpExecuteGpuJobs` stops at the first failed job and executes none after it, which the valid encoder depends on; AMD's DX12 `ExecuteGpuJobsDX12` instead records every job and keeps overwriting its error code (`ffx_dx12.cpp:3461–3499`). Godot's FSR2 backend stops at the first failed job (`execute_gpu_jobs_rd`, `servers/rendering/renderer_rd/effects/fsr2.cpp:479–482` at Godot b130438), fails a job whose UAV view it could not create before recording it (`execute_gpu_job_compute_rd`, `fsr2.cpp:424`), and its RenderingDevice refuses to bind an invalid uniform set (`servers/rendering/rendering_device.cpp:6884–6885`). `ffxFsr2ContextDispatch` ignores `fpExecuteGpuJobs`'s result (`ffx_fsr2.cpp:1321`), as the port does, so the backend keeps the first failure's code and message for `take_job_error`. A failed job records nothing invalid: what it records before its check, a compute job's SDK-P23 conversion copy, is valid (a job observer's commands are the observer's own). Only new objects are checked: a bind group a pipeline kept was checked when it was made, so a texture destroyed after that is recorded and fails at `queue.submit`; and invalid inputs can still invalidate the encoder while a job records, for example one texture passed as both an input and the output (a usage conflict). On WebGPU the scopes resolve only after the call, so there the error stays deferred to `finish`. |
+
+### SDK-P33 — padded frame-interpolation game-field invocations
+
+The original C++ rounds the game-field dispatch up to 8×8 groups
+(`ffx_frameinterpolation.cpp:1079–1083`), but the HLSL entry point does not
+exclude invocation coordinates outside `RenderSize()`. At height 750, a padded
+zero-motion source at y=750 projects to pixel 749.99994 in FP32. Its bilinear
+splat writes a false primary vector onto valid row 749. Output texture bounds
+checks cannot prevent this in-bounds write. The corresponding right-edge case
+occurs at width 750.
+
+`frameinterpolation_edges::padded_game_field_threads_do_not_publish_primary_vectors`
+isolates the original pass at 32×750 and 750×32, using the unchanged C++ host's
+constants and dispatch dimensions. Every valid source translates inward, so
+none can publish a primary onto the outgoing last row/column. Unchanged HLSL
+does publish zero-motion primaries there; the uncorrected WGSL does too. An
+entry-point render-size guard removes them while preserving valid primaries
+exactly. The vendor sources remain unmodified. This is a verified original
+input-domain bug, distinct from the broader reconstruction limitation below.
+
+The standalone C++/Vulkan fixture in the oracle's
+`repro/frameinterpolation_edges/` also executes unchanged SDK 1.1.4 and current
+AMD main (`7539ae8b6568ad29ed78a753404351daf3b5cca7`). In a 32×752 allocation
+with logical render size 32×750, allocated padded depth/motion causes 96 false
+primaries on rows 726–728 without relying on the zero-motion FP32 round-trip.
+A render-domain guard eliminates them and preserves interior translation.
+An intentionally empty shader is rejected by the fixture's positive control.
+The Vulkan run here uses MoltenVK on Apple M5, not native AMD hardware.
+
+### Outgoing ground-plane reproduction
+
+`frameinterpolation_passes::outgoing_ground_reproduces_original_edge_limit`
+generates depth, motion and color analytically for an infinite stationary plane
+two metres below a level camera, 80-degree vertical FOV, advancing four metres
+per real frame at 1200×750. It needs no renderer or application capture. Color
+stripes have a 6.2-metre period, avoiding a repeated identical frame pair.
+
+The original sequence and port both bend straight horizontal stripes near the
+outgoing edges. Primary vectors match exactly except SDK-P33's invalid edge;
+secondary vectors are not deterministic in unchanged native replay. Their loop
+uses concurrently published primaries to decide when to stop. These differences
+are reported, not accepted as general parity tolerance.
+
+At pixel (600,700), the endpoint-linear midpoint projection requires about
+171 pixels of vertical half-motion. Visible current-frame sources supply at
+most about 117 pixels. The original secondary path copies those vectors, and
+the pyramid computes weighted averages; neither can supply the missing larger
+velocity. Replaying the unchanged interpolation pass with the analytic midpoint
+field restores straight stripes. Its remaining inputs and shaders stay fixed.
+At row 700, changing the frame counter from 3 to 52 and changing optical-flow
+vectors leaves the output unchanged, excluding optical-flow warmup as the cause.
+
+This establishes a quality limitation of the original reconstruction on these
+valid inputs, not a mistranslated arithmetic operation. The bounds fix does not
+resolve it. SDK-P34 below is a separately tested Rust-only correction; the
+original reproduction remains unchanged. Native evidence here uses DXC/SPIRV-Cross Metal;
+it is not a run of AMD's complete supported DX12/Vulkan implementation.
+
+### SDK-P34 — outgoing stationary geometry
+
+Owner-authorized Rust/WGSL correction for the independently reproduced outgoing
+motion deficit ([AMD issue #213](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/issues/213)).
+This is an algorithm departure, not a translation claim. No C++/HLSL under
+`vendor/` or original oracle shader is changed. The independent source
+reproduction and AMD host/GPU comparisons remain in the oracle; the latter
+explicitly disable SDK-P34 with `ffx_frame_interpolation_set_outgoing_reconstruction`.
+Disabling this correction does not disable the separate SDK-P33 bounds fix.
+
+The standard basis is depth-image warping using previous-view coverage:
+[post-rendering 3D warping](https://cs.brown.edu/stc/resea/rendering/research_R9.html),
+[depth-mesh reprojection and discontinuity handling](https://www.microsoft.com/en-us/research/wp-content/uploads/2016/10/reinert2016.compressed.pdf),
+and [bidirectional frame interpolation](https://sites.cs.ucsb.edu/~lingqi/publications/paper_sig24mobfgsr.pdf).
+Only the method is used; no code from these papers is copied. AMD's existing
+packed-vector helpers and interpolation remain the port's reference.
+
+`frameinterpolation/outgoing.rs` owns the additional history, resources and
+scheduling; the `outgoing_*` and `current_*` WGSL shaders own the new math. Six
+port-only pass IDs start at `0x1000`; original SDK IDs and constant layouts stay
+unchanged. Prepare captures raw depth and normalized motion into alternating
+history slots before nearest-depth dilation. Projection uses retained current,
+previous and older camera poses/FOV/jitter. Before the motion pyramid and
+visibility pass, current-source cells supply continuous midpoint coverage where
+fixed point splats leave gaps. Nearby primaries can be refined only if the
+original source's measured motion also agrees with camera projection and the
+raw source depths connect. The two-render-pixel difference limit is a conservative
+acceptance bound, not a proof of surface identity. Accepted motion and its
+source-triangle depth are published together; rejected candidates change neither.
+After the original disocclusion
+pass, previous-depth cell triangles supply a separate candidate field at
+`(previousUV + currentUV)/2`, carrying `(previousUV - currentUV)/2`. The resolve
+accepts previous-visible/current-outside candidates only where the original
+field is not primary, then marks previous color visible and current color
+unavailable with the existing `(1,0)` mask. Packed endpoints are checked again.
+A final pass retains the distortion matching the previous color history.
+
+Raw samples avoid dilation's displaced silhouette geometry. Motion consistency
+uses binary16 precision plus an FP32 projection allowance, not a blanket pixel
+radius. Adjacent depth slopes reject unsupported cell connections; one triangle
+has a fixed 4096-candidate raster budget. Unsupported cells are skipped as a
+whole. Camera-relative arithmetic avoids adding local geometry to a large world
+origin. Distortion checks preserve original behavior at warped lookups. There is
+no overscan, border feather, invented velocity scale, or optical-flow tuning.
+
+Limits are deliberate: prior motion cannot prove current staticness; a newly
+moving object can pass the historical check. The previous-source pass preserves
+primary vectors even where outgoing foreground might be nearer at the midpoint.
+Sky, unsupported silhouettes/curvature, extreme cell magnification and missing
+camera metadata retain the original fallback. Jitter-included and display-resolution motion are not
+supported by the correction. A nearest display-grid motion sample describes a
+different ray from the raw render-grid depth; treating that offset as object
+motion would reject valid stationary surfaces. Those inputs keep the original
+reconstruction until a depth-consistent resampling scheme is validated. The composite SDK wrapper does not supply camera
+basis metadata; standalone callers must supply it. Mismatched prepare/dispatch
+IDs invalidate correction history. This is not a universal fix for FG artifacts.
+
+Allocation happens before per-frame jobs are queued. Errors still drain queued
+work and unregister inputs; history advances only after successful job encoding.
+The seven persistent render-sized resources use 28 bytes/pixel before backend
+atomic mirrors. Runtime cost requires measurement for the completed correction.
+
+`sp-fidelity-wgpu::outgoing_tests` exercises actual GPU dispatches. The expanded
+plane checks continuous coverage beyond fixed-size splats and expected color;
+the independent 1200×750 ground fixture checks the missing 171px correspondence,
+with an unchanged reconstruction negative control. Further checks reject
+previously moving foreground, avoid joining separate depth surfaces, preserve
+upstream primaries, and reset history. Finite reverse depth with varying raster
+jitter, missing/nonconsecutive camera history, and current/previous distortion
+lookups (including a render region smaller than its allocation) are covered.
+These tests establish their stated
+geometric cases, not visual acceptance of arbitrary game content.
+
+`frameinterpolation_receding` independently reproduces sparse primary coverage
+in unchanged HLSL: a 96×64 plane moves from distance 2 to distance 9, so current
+source cells expand 2.75× at the midpoint. The original field has 2,368 interior
+primary holes and up to 17.5 pixels of secondary-vector error; valid primary
+entries match the port exactly. The complete GPU regression checks the analytic
+plane color, plus a textured receding ground at two velocities. A camera-attached
+coplanar panel catches refinement that would overwrite independently moving
+geometry; a distorted expanding footprint catches rejected candidates altering
+the reconstructed depth. These do not establish a color-seam fix.
+
+The `frameinterpolation_seam` source fixtures isolate a separate color problem.
+An infinite mirror against an environment at infinity has stationary reflected
+appearance despite geometric motion. With exact zero optical flow, the original
+interpolation still promotes the game hypothesis to perfect similarity when its
+endpoint leaves the viewport and warps the reflected image. A moving diffuse
+sinusoid with deliberately incorrect optical flow is the negative control:
+forcing optical flow at the viewport edge must not break its exact geometric
+correspondence. No color correction has been accepted yet.
+
+The standalone C++/Vulkan reproduction's `--color` mode includes unchanged
+`ffx_frameinterpolation.h` directly and reproduces the affine/non-affine mirror
+and linear-illumination cases against SDK 1.1.4 and AMD main
+`7539ae8b6568ad29ed78a753404351daf3b5cca7`. It supplies analytic callback inputs,
+not application captures or port-generated intermediates. Its diffuse controls
+also cover a repeating texture with a tiny lighting change: hard minimum-error
+selection regresses that case, although the original remains accurate. Native
+runs here use Vulkan through MoltenVK on Apple M5. No color-algorithm departure
+has been adopted on the strength of these diagnostics.
+
+When updating upstream: retain its vendor tree verbatim, rerun original-path
+host/shader comparisons, then run the independent correction regressions. If
+AMD supplies equivalent outgoing coverage, compare it on these inputs and remove
+this correction when it supersedes it; do not fold this patch into the reference.
 
 ### SDK-P14 — SPD hand-off between workgroups
 
