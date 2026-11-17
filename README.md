@@ -47,10 +47,13 @@ Add the crates.io dependencies:
 
 ```toml
 [dependencies]
-sp-fidelity = "0.3.0"
-sp-fidelity-wgpu = "0.3.0"
+sp-fidelity = "0.3.1"
+sp-fidelity-wgpu = "0.3.1"
 wgpu = "30.0.1"
 ```
+
+0.3.1 corrects SDK-P35, which changes FSR2's output near the frame's edges;
+the API is unchanged and applications need no code changes.
 
 Use the standalone `fsr2` or `fsr3upscaler` APIs for temporal upscaling.
 The `fsr3` and `fsr3_present` examples exercise the unsupported frame-generation
