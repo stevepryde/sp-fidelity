@@ -49,10 +49,18 @@ const FSR2: Effect = Effect {
     includes: &["src/components/fsr2"],
 };
 
-/// FSR2 with SDK-P35, a verified upstream bug, corrected in the HLSL the
-/// compile tool builds (`--correction SDK-P35`, `shaders/generated/fsr2-sdk-p35`):
-/// the reference the port's accumulate pass matches. The unchanged variants
-/// reproduce the bug.
+/// FSR2 with SDK-P35, SDK-P36 and SDK-P37, verified upstream bugs, corrected in the
+/// HLSL the compile tool builds (`--correction` with each, in that order:
+/// `shaders/generated/fsr2-sdk-p35-sdk-p36-sdk-p37`): the reference the port's
+/// accumulate pass matches. The unchanged variants reproduce the bugs.
+const FSR2_CORRECTED: Effect = Effect {
+    name: "fsr2-sdk-p35-sdk-p36-sdk-p37",
+    ..FSR2
+};
+
+/// FSR2 with only SDK-P35 corrected (`--correction SDK-P35`,
+/// `shaders/generated/fsr2-sdk-p35`): it reproduces SDK-P36 apart from
+/// SDK-P35 (and SDK-P37 apart from both).
 const FSR2_SDK_P35: Effect = Effect {
     name: "fsr2-sdk-p35",
     ..FSR2
@@ -537,10 +545,21 @@ struct AccumulateCase {
     exposure: ExposureSource,
     /// A dispatch after the warm-up with `FfxFsr2DispatchDescription::reset`.
     reset: Option<usize>,
-    /// One grey everywhere, at rest, nothing reactive, exposure and
-    /// pre-exposure 1 (`uniform_contents`), at jitter phases 7 to 11 rather
-    /// than 2 to 6, and stale texels beyond the render size.
-    uniform: bool,
+    /// One grey everywhere, or with a [`BAND`], moving together, nothing
+    /// reactive, exposure and pre-exposure 1 (`uniform_contents`), at
+    /// jitter phases 7 to 11 rather than 2 to 6, and stale texels beyond the
+    /// render size.
+    uniform: Option<Scene>,
+}
+
+/// A uniform case's scene.
+#[derive(Clone, Copy)]
+struct Scene {
+    /// Display pixels a frame (the motion vector, previous minus current).
+    motion: [f32; 2],
+    /// [`BAND`]'s rows across the full width, in the render and the
+    /// history alike.
+    band: bool,
 }
 
 impl AccumulateCase {
@@ -602,7 +621,7 @@ impl AccumulateCase {
     /// the SDK's jitter sequence and with changing pre-exposure.
     fn host_words(&self) -> Vec<u32> {
         let s = self.sizes;
-        let jitter = if self.uniform { 5 } else { 0 };
+        let jitter = if self.uniform.is_some() { 5 } else { 0 };
         let mut words = vec![
             1,
             self.flags(),
@@ -622,7 +641,11 @@ impl AccumulateCase {
         };
         for (dispatch, pre_exposure) in PRE_EXPOSURE.iter().enumerate() {
             let index = u32::try_from(dispatch).unwrap() + jitter;
-            let pre_exposure = if self.uniform { &1.0f32 } else { pre_exposure };
+            let pre_exposure = if self.uniform.is_some() {
+                &1.0f32
+            } else {
+                pre_exposure
+            };
             words.extend([
                 0,
                 1 | 2 | 4 | 64 | exposure,
@@ -754,8 +777,8 @@ fn contents(
     history: bool,
     init: &HashMap<String, Vec<u8>>,
 ) -> Option<Vec<u8>> {
-    if case.uniform {
-        return uniform_contents(case, resource, history, init);
+    if let Some(scene) = case.uniform {
+        return uniform_contents(case, scene, resource, history, init);
     }
     let hdr = case.options & HDR != 0;
     let [dw, dh] = case.sizes.display;
@@ -924,12 +947,17 @@ fn contents(
 
 /// The grey of a uniform case.
 const GREY: f32 = 0.25;
+/// A brighter grey, and the render rows it covers when a uniform case has
+/// a band.
+const BAND: (f32, std::ops::Range<u32>) = (1.0, 8..14);
 
 /// [`contents`] of a uniform case: one grey in the prepared colour and the
 /// history, and texels beyond the render size a stale other colour, as in
-/// [`contents`]; still, no locks, nothing reactive, exposure 1.
+/// [`contents`]; a [`BAND`] if the scene has one, its motion everywhere, no
+/// locks, nothing reactive, exposure 1.
 fn uniform_contents(
     case: &AccumulateCase,
+    scene: Scene,
     resource: &Resource,
     history: bool,
     init: &HashMap<String, Vec<u8>>,
@@ -947,6 +975,14 @@ fn uniform_contents(
             .collect::<Vec<u8>>()
     };
     let floats = |values: [f32; 2]| values.iter().flat_map(|v| v.to_le_bytes()).collect();
+    // The grey of render row `y`.
+    let grey = |y: u32| {
+        if scene.band && BAND.1.contains(&y) {
+            BAND.0
+        } else {
+            GREY
+        }
+    };
     Some(match resource.name {
         "FSR2_LanczosLutData" => init["FSR2_LanczosLutData"].clone(),
         "FSR2_DefaultExposure" => return None,
@@ -954,8 +990,12 @@ fn uniform_contents(
             assert!(name.starts_with("FSR2_"), "{name}");
             return None;
         }
+        // The render rows' band at display rows whose centres fall in it.
         "FSR2_InternalUpscaled1" | "FSR2_InternalUpscaled2" => texels(0)
-            .flat_map(|_| halves(&[GREY, GREY, GREY, 0.0]))
+            .flat_map(|(_, y)| {
+                let v = grey((y * 2 + 1) * rh / (height * 2));
+                halves(&[v, v, v, 0.0])
+            })
             .collect(),
         "FSR2_LockStatus1" | "FSR2_LockStatus2" => {
             texels(0).flat_map(|_| halves(&[0.0, 0.0])).collect()
@@ -973,14 +1013,20 @@ fn uniform_contents(
                 if x >= rw || y >= rh {
                     halves(&[1.75, 0.5, -1.75, 0.0])
                 } else {
-                    halves(&[GREY, 0.0, 0.0, 0.0])
+                    halves(&[grey(y), 0.0, 0.0, 0.0])
                 }
             })
             .collect(),
         "FSR2_DilatedReactiveMasks" => texels(0).flat_map(|_| [0, 0]).collect(),
-        "FSR2_InternalDilatedVelocity1" | "FSR2_InternalDilatedVelocity2" | "motion-vectors" => {
-            texels(0).flat_map(|_| halves(&[0.0, 0.0])).collect()
+        // Dilated in UV, the application's in display pixels (the host's
+        // motion vector scale is 1).
+        "FSR2_InternalDilatedVelocity1" | "FSR2_InternalDilatedVelocity2" => {
+            let [dw, dh] = case.sizes.display;
+            let [x, y] = scene.motion;
+            let uv = [x / dw as f32, y / dh as f32];
+            texels(0).flat_map(|_| halves(&uv)).collect()
         }
+        "motion-vectors" => texels(0).flat_map(|_| halves(&scene.motion)).collect(),
         "FSR2_ExposureMips" => (0..resource.mips)
             .flat_map(|mip| texels(mip).flat_map(|_| halves(&[0.0])))
             .collect(),
@@ -1029,7 +1075,7 @@ struct AccumulateResult {
 }
 
 /// Run `case` through AMD's C++ host, the port's WGSL and the Metal oracle,
-/// whose HLSL has SDK-P35 corrected.
+/// whose HLSL has SDK-P35, SDK-P36 and SDK-P37 corrected.
 #[allow(clippy::too_many_lines)] // Host trace to jobs, resources and pipeline.
 fn accumulate_case(gpu: &gpu::Gpu, case: &AccumulateCase) -> AccumulateResult {
     let [dw, dh] = case.sizes.display;
@@ -1203,10 +1249,10 @@ fn accumulate_case(gpu: &gpu::Gpu, case: &AccumulateCase) -> AccumulateResult {
     pass::run(gpu, &FSR2, &directory, &resources, &pipeline, &jobs);
     // Both oracles compile with Metal fast math (SDK-P22): measured.
     let fast_math = |_: &compare::Difference| Ok("SDK-P22");
-    gpu::replay(&directory, &FSR2_SDK_P35);
+    gpu::replay(&directory, &FSR2_CORRECTED);
     let identical = compare::compare(&directory, FSR2.stages, &fast_math);
     let carried = compare::compare(
-        &gpu::run_sequence(&directory, &FSR2_SDK_P35),
+        &gpu::run_sequence(&directory, &FSR2_CORRECTED),
         FSR2.stages,
         &fast_math,
     );
@@ -1217,7 +1263,7 @@ fn accumulate_case(gpu: &gpu::Gpu, case: &AccumulateCase) -> AccumulateResult {
         assert_eq!(source.matches(sdk).count(), 1, "{sdk}");
         source = source.replace(sdk, dxc);
     }
-    let [port, original] = pass::strict_variants(&FSR2_SDK_P35, &pipeline, &source, &strict);
+    let [port, original] = pass::strict_variants(&FSR2_CORRECTED, &pipeline, &source, &strict);
     gpu::link_case(&directory, &strict, &["cpp.jsonl", "inputs"]);
     // The port into `wgpu` and the original into `metal-replay`, the
     // directories compare::compare reads.
@@ -1293,7 +1339,7 @@ fn accumulate_matches_the_hlsl_in_every_permutation() {
                 sizes,
                 exposure,
                 reset: (i % 2 == 1).then_some(WARMUP + 2),
-                uniform: false,
+                uniform: None,
             };
             let result = accumulate_case(&gpu, &case);
             maxima(&result.identical, &mut identical);
@@ -1335,6 +1381,22 @@ fn from_half(bits: u16) -> f32 {
 /// two binary16 stores a radiance passes through (the history and the
 /// output): `(frame, x, y, value)`, the first of each frame.
 fn off_grey(side: &std::path::Path, stage: &str, width: u32) -> Vec<(String, u32, u32, f32)> {
+    outside(side, stage, width, GREY..=GREY)
+}
+
+/// The texels of `side`'s accumulate outputs outside `range`, widened by
+/// the two binary16 stores a radiance passes through (the history and the
+/// output): `(frame, x, y, value)`, the first of each frame.
+fn outside(
+    side: &std::path::Path,
+    stage: &str,
+    width: u32,
+    range: std::ops::RangeInclusive<f32>,
+) -> Vec<(String, u32, u32, f32)> {
+    let (low, high) = (
+        range.start() * (1.0 - 2.0 / 2048.0),
+        range.end() * (1.0 + 2.0 / 2048.0),
+    );
     let mut frames: Vec<_> = fs::read_dir(side)
         .unwrap()
         .map(|e| e.unwrap().path())
@@ -1355,7 +1417,7 @@ fn off_grey(side: &std::path::Path, stage: &str, width: u32) -> Vec<(String, u32
                 texel[..6]
                     .chunks_exact(2)
                     .map(|c| from_half(u16::from_le_bytes([c[0], c[1]])))
-                    .find(|v| (v - GREY).abs() > 2.0 * GREY / 2048.0)
+                    .find(|v| !(low..=high).contains(v))
                     .map(|v| {
                         let name = frame.file_name().unwrap().to_string_lossy().into_owned();
                         (name, i % width, i / width, v)
@@ -1373,7 +1435,7 @@ fn off_grey(side: &std::path::Path, stage: &str, width: u32) -> Vec<(String, u32
 /// match each other as `accumulate_case` requires. Native resolution, and an
 /// upscale whose maximum render size exceeds the render size (stale texels).
 #[test]
-#[ignore = "needs Metal, clang++ and the compiled FSR2 accumulate variants, unchanged and SDK-P35"]
+#[ignore = "needs Metal, clang++ and the compiled FSR2 accumulate variants, unchanged and corrected"]
 fn accumulate_keeps_a_uniform_frame_uniform() {
     let gpu = gpu::Gpu::new(true, None);
     let mut failures = Vec::new();
@@ -1387,7 +1449,10 @@ fn accumulate_keeps_a_uniform_frame_uniform() {
                 sizes,
                 exposure: ExposureSource::Application,
                 reset: None,
-                uniform: true,
+                uniform: Some(Scene {
+                    motion: [0.0, 0.0],
+                    band: false,
+                }),
             };
             let result = accumulate_case(&gpu, &case);
             if ![&result.identical, &result.carried, &result.strict]
@@ -1395,7 +1460,7 @@ fn accumulate_keeps_a_uniform_frame_uniform() {
                 .all(|c| c.accepted())
             {
                 failures.push(format!(
-                    "{options:#04x} {:?}: differs from SDK-P35",
+                    "{options:#04x} {:?}: differs from the corrected HLSL",
                     sizes.display
                 ));
             }
@@ -1410,7 +1475,7 @@ fn accumulate_keeps_a_uniform_frame_uniform() {
             for (side, path, uniform) in [
                 ("port", directory.join("wgpu"), Some(true)),
                 (
-                    "SDK-P35 HLSL",
+                    "corrected HLSL",
                     directory.join("sequence/metal-replay"),
                     Some(true),
                 ),
@@ -1426,6 +1491,178 @@ fn accumulate_keeps_a_uniform_frame_uniform() {
                             "the upstream defect"
                         } else {
                             "uniform"
+                        }
+                    ));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// The lowest channel of `side`'s accumulate outputs over every frame:
+/// `(frame, x, y, value)`.
+fn lowest(side: &std::path::Path, stage: &str, width: u32) -> (String, u32, u32, f32) {
+    let mut frames: Vec<_> = fs::read_dir(side)
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.join(stage).join("output.mip-0.bin").exists())
+        .collect();
+    frames.sort();
+    let mut lowest = (String::new(), 0, 0, f32::INFINITY);
+    for frame in &frames {
+        let bytes = fs::read(frame.join(stage).join("output.mip-0.bin")).unwrap();
+        for (i, texel) in bytes.chunks_exact(8).enumerate() {
+            let i = u32::try_from(i).unwrap();
+            for c in texel[..6].chunks_exact(2) {
+                let v = from_half(u16::from_le_bytes([c[0], c[1]]));
+                if v < lowest.3 {
+                    let name = frame.file_name().unwrap().to_string_lossy().into_owned();
+                    lowest = (name, i % width, i / width, v);
+                }
+            }
+        }
+    }
+    lowest
+}
+
+/// SDK-P36. A uniform grey moving 6 display pixels a frame to the right at
+/// Ultra Performance's ratio (3): the columns at the left edge have their
+/// history off screen, so each is a new sample, written as the frame's
+/// upsample. A filter of a constant field reproduces it, so every texel
+/// must stay that grey. The unchanged HLSL, and the HLSL with only SDK-P35
+/// corrected, write a negative value there on jitter phases 7 and 8: the
+/// on-screen Lanczos weights sum below `FSR2_EPSILON` and the colour is left
+/// unnormalised. The port and the corrected HLSL do not, and match each
+/// other as `accumulate_case` requires.
+#[test]
+#[ignore = "needs Metal, clang++ and the compiled FSR2 accumulate variants, unchanged, SDK-P35 and corrected"]
+fn accumulate_keeps_a_uniform_frame_uniform_where_history_is_off_screen() {
+    let gpu = gpu::Gpu::new(true, None);
+    let mut failures = Vec::new();
+    for options in [HDR | INVERTED_DEPTH, HDR | INVERTED_DEPTH | FP16, 0] {
+        let sizes = ACCUMULATE_SIZES[3];
+        let case = AccumulateCase {
+            options,
+            sizes,
+            exposure: ExposureSource::Application,
+            reset: None,
+            uniform: Some(Scene {
+                motion: [-6.0, 0.0],
+                band: false,
+            }),
+        };
+        let result = accumulate_case(&gpu, &case);
+        if ![&result.identical, &result.carried, &result.strict]
+            .iter()
+            .all(|c| c.accepted())
+        {
+            failures.push(format!("{options:#04x}: differs from the corrected HLSL"));
+        }
+        let stage = FSR2.stages[case.pass() as usize];
+        let width = sizes.display[0];
+        let directory = &result.directory;
+        let mut sides = vec![
+            ("port", directory.join("wgpu"), true),
+            (
+                "corrected HLSL",
+                directory.join("sequence/metal-replay"),
+                true,
+            ),
+        ];
+        for (name, effect) in [("unchanged HLSL", &FSR2), ("SDK-P35 HLSL", &FSR2_SDK_P35)] {
+            let control = directory.join(effect.name);
+            gpu::link_case(directory, &control, &["cpp.jsonl", "inputs", "wgpu"]);
+            sides.push((
+                name,
+                gpu::run_sequence(&control, effect).join("metal-replay"),
+                false,
+            ));
+        }
+        for (side, path, corrected) in sides {
+            let off = off_grey(&path, stage, width);
+            let low = lowest(&path, stage, width);
+            println!("{options:#04x} {side}: lowest {low:?}, off grey {off:?}");
+            if corrected && !off.is_empty() {
+                failures.push(format!("{options:#04x} {side}: not uniform: {off:?}"));
+            }
+            if !corrected && low.3 >= 0.0 {
+                failures.push(format!(
+                    "{options:#04x} {side}: no negative value, lowest {low:?}"
+                ));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// SDK-P37. A grey frame with a brighter [`BAND`] of rows across its full
+/// width, at rest, nothing reactive: every texel must stay within the
+/// frame's range, [`GREY`] to the band's grey. Deringing clamps the Lanczos
+/// upsample, whose negative lobe undershoots beside the band, into the 3x3
+/// taps' bounds, and the history is clamped within them. The unchanged HLSL,
+/// and the HLSL with only SDK-P35 corrected, take taps off the render area
+/// into those bounds as zeros (or stale texels beyond the render size), so
+/// at the frame's left and right edges, beside the band, the undershoot
+/// stays. The port and the corrected HLSL keep the range, and match each
+/// other as `accumulate_case` requires.
+#[test]
+#[ignore = "needs Metal, clang++ and the compiled FSR2 accumulate variants, unchanged, SDK-P35 and corrected"]
+fn accumulate_keeps_a_band_within_the_frame_s_range_at_its_edges() {
+    let gpu = gpu::Gpu::new(true, None);
+    let mut failures = Vec::new();
+    for options in [HDR | INVERTED_DEPTH, HDR | INVERTED_DEPTH | FP16, 0] {
+        for sizes in [ACCUMULATE_SIZES[0], ACCUMULATE_SIZES[1]] {
+            let case = AccumulateCase {
+                options,
+                sizes,
+                exposure: ExposureSource::Application,
+                reset: None,
+                uniform: Some(Scene {
+                    motion: [0.0, 0.0],
+                    band: true,
+                }),
+            };
+            let result = accumulate_case(&gpu, &case);
+            let display = sizes.display;
+            if ![&result.identical, &result.carried, &result.strict]
+                .iter()
+                .all(|c| c.accepted())
+            {
+                failures.push(format!(
+                    "{options:#04x} {display:?}: differs from the corrected HLSL"
+                ));
+            }
+            let stage = FSR2.stages[case.pass() as usize];
+            let width = display[0];
+            let directory = &result.directory;
+            let mut sides = vec![
+                ("port", directory.join("wgpu"), true),
+                (
+                    "corrected HLSL",
+                    directory.join("sequence/metal-replay"),
+                    true,
+                ),
+            ];
+            for (name, effect) in [("unchanged HLSL", &FSR2), ("SDK-P35 HLSL", &FSR2_SDK_P35)] {
+                let control = directory.join(effect.name);
+                gpu::link_case(directory, &control, &["cpp.jsonl", "inputs", "wgpu"]);
+                sides.push((
+                    name,
+                    gpu::run_sequence(&control, effect).join("metal-replay"),
+                    false,
+                ));
+            }
+            for (side, path, corrected) in sides {
+                let off = outside(&path, stage, width, GREY..=BAND.0);
+                println!("{options:#04x} {display:?} {side}: {off:?}");
+                if off.is_empty() != corrected {
+                    failures.push(format!(
+                        "{options:#04x} {display:?} {side}: expected {}, got {off:?}",
+                        if corrected {
+                            "the range"
+                        } else {
+                            "the upstream defect"
                         }
                     ));
                 }

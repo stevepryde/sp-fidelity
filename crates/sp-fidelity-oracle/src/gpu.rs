@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// A Metal device with the backend's required features, `SHADER_F16` when
 /// `fp16`, and optionally a lowered workgroup-count limit.
@@ -300,15 +301,19 @@ fn observe(
     }
 }
 
-/// A fresh case directory under this crate's `target/gpu-oracle`.
+/// A fresh case directory under this crate's `target/gpu-oracle`. The clock
+/// can repeat between tests running in parallel (macOS gives microseconds),
+/// so the process's case count makes the name unique.
 pub fn case_directory(name: &str) -> PathBuf {
+    static CASES: AtomicUsize = AtomicUsize::new(0);
     let run = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
+    let case = CASES.fetch_add(1, Ordering::Relaxed);
     let directory = root()
         .join("target/gpu-oracle")
-        .join(format!("{name}-run-{run}"));
+        .join(format!("{name}-run-{run}-{case}"));
     fs::create_dir_all(&directory).unwrap();
     directory
 }

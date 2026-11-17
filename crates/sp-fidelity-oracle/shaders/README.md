@@ -83,18 +83,21 @@ and `fsr2_accumulate` without `ENABLE_SHARPENING` (`0x20`) or
 the 32-bit table, so only `0x00`-`0x3f`; RCAS's variants are identical, since
 no FSR2 option reaches it.
 
-The accumulate tests compare the port with the HLSL that has SDK-P35, a verified
-upstream bug, corrected (CONFORMANCE.md), and run the unchanged HLSL to
-reproduce it. Generate that reference too, into `generated/fsr2-sdk-p35/`
-(not tracked); `--correction` changes the tool's working copy of the SDK
-headers, never `vendor/`:
+The accumulate tests compare the port with the HLSL that has SDK-P35, SDK-P36
+and SDK-P37, verified upstream bugs, corrected (CONFORMANCE.md), and run the
+unchanged HLSL to reproduce them; SDK-P36's and SDK-P37's tests also run the
+HLSL with only SDK-P35 corrected. Generate both references too, into
+`generated/fsr2-sdk-p35-sdk-p36-sdk-p37/` and `generated/fsr2-sdk-p35/` (not
+tracked); `--correction`, repeated in that order, changes the tool's working
+copy of the SDK headers, never `vendor/`:
 
 ```sh
 for o in $(seq 0 63) $(seq 128 191); do
   a=fsr2_accumulate; [ $((o & 32)) -ne 0 ] && a=fsr2_accumulate_sharpen
-  python3 tools/compile_dxc_oracle.py --effect fsr2 --options $o --pass-name $a \
-    --correction SDK-P35 \
-    --dxc ~/VulkanSDK/1.4.357.1/macOS/bin/dxc-3.7 --spirv-cross /opt/homebrew/bin/spirv-cross
+  for c in "--correction SDK-P35" "--correction SDK-P35 --correction SDK-P36 --correction SDK-P37"; do
+    python3 tools/compile_dxc_oracle.py --effect fsr2 --options $o --pass-name $a $c \
+      --dxc ~/VulkanSDK/1.4.357.1/macOS/bin/dxc-3.7 --spirv-cross /opt/homebrew/bin/spirv-cross
+  done
 done
 ```
 

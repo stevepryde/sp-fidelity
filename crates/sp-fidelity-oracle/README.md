@@ -113,7 +113,7 @@ then select the GPU tests explicitly:
 cargo test -p sp-fidelity-oracle --release -- --ignored --nocapture
 ```
 
-Captures, traces and reports go to `target/gpu-oracle/<case>-run-<time>`.
+Captures, traces and reports go to `target/gpu-oracle/<case>-run-<time>-<n>`.
 
 The full-resolution FI test uses original HLSL with serialized tile scheduling
 for SPD: each tile runs through AMD's existing workgroup-offset parameter, with
@@ -181,9 +181,14 @@ the original through the same Metal compiler without fast math.
 computes its `cbRCAS` with AMD's host code) and the accumulate passes, whose
 jobs, `cbFSR2` and Lanczos LUT data come from AMD's C++ host
 (`oracle/fsr2_host.cpp`), in every permutation. Accumulate is compared with
-the HLSL with SDK-P35 corrected (`shaders/generated/fsr2-sdk-p35`);
-`accumulate_keeps_a_uniform_frame_uniform` also runs the unchanged HLSL,
-which reproduces that upstream bug.
+the HLSL with SDK-P35, SDK-P36 and SDK-P37 corrected
+(`shaders/generated/fsr2-sdk-p35-sdk-p36-sdk-p37`). Each correction's test
+(`accumulate_keeps_a_uniform_frame_uniform`,
+`accumulate_keeps_a_uniform_frame_uniform_where_history_is_off_screen`,
+`accumulate_keeps_a_band_within_the_frame_s_range_at_its_edges`) also runs
+the unchanged HLSL, which reproduces the upstream bug; the last two also run
+the HLSL with only SDK-P35 corrected (`shaders/generated/fsr2-sdk-p35`), which
+reproduces theirs apart from it.
 
 ## FSR3.1 comparisons
 

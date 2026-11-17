@@ -3609,11 +3609,6 @@ mod tests {
         // phase, within the two binary16 stores it passes through (the
         // history and the output).
         use sp_fidelity::fsr2::*;
-        let Some((device, queue)) = device() else {
-            return;
-        };
-        const GREY: f32 = 0.25;
-        const TOLERANCE: f32 = 2. * GREY / 2048.;
         let quality =
             ffx_fsr2_get_render_resolution_from_quality_mode(37, 23, FfxFsr2QualityMode::Quality)
                 .unwrap();
@@ -3622,129 +3617,229 @@ mod tests {
             ((64, 64), (64, 64)),
             ((37, 23), quality),
         ] {
-            let display = FfxDimensions2D {
-                width: display.0,
-                height: display.1,
-            };
-            let render = FfxDimensions2D {
-                width: render.0,
-                height: render.1,
-            };
-            let (backend, interface) = ffx_get_interface_wgpu(&device);
-            let mut context = FfxFsr2Context::default();
-            ffx_fsr2_context_create(
-                &mut context,
-                &FfxFsr2ContextDescription {
-                    flags: FFX_FSR2_ENABLE_HIGH_DYNAMIC_RANGE
-                        | FFX_FSR2_ENABLE_DEPTH_INVERTED
-                        | FFX_FSR2_ENABLE_DEPTH_INFINITE,
-                    max_render_size: display,
-                    display_size: display,
-                    fp_message: None,
-                    backend_interface: interface,
-                },
-            )
-            .unwrap();
-            let texture =
-                |size: FfxDimensions2D, format: wgpu::TextureFormat, usage, texel: &[u8]| {
-                    let texels = (size.width * size.height) as usize;
-                    device.create_texture_with_data(
-                        &queue,
-                        &wgpu::TextureDescriptor {
-                            label: None,
-                            size: wgpu::Extent3d {
-                                width: size.width,
-                                height: size.height,
-                                depth_or_array_layers: 1,
-                            },
-                            mip_level_count: 1,
-                            sample_count: 1,
-                            dimension: wgpu::TextureDimension::D2,
-                            format,
-                            usage,
-                            view_formats: &[],
-                        },
-                        wgpu::util::TextureDataOrder::LayerMajor,
-                        &texel.repeat(texels),
-                    )
-                };
-            let read = wgpu::TextureUsages::TEXTURE_BINDING;
-            // GREY and 1 as IEEE binary16.
-            let grey = [0x00, 0x34, 0x00, 0x34, 0x00, 0x34, 0x00, 0x3c];
-            let color = texture(render, wgpu::TextureFormat::Rgba16Float, read, &grey);
-            // Infinitely far, reversed-Z.
-            let depth = texture(render, wgpu::TextureFormat::R32Float, read, &[0; 4]);
-            let motion = texture(render, wgpu::TextureFormat::Rg16Float, read, &[0; 4]);
-            let output = texture(
-                display,
-                wgpu::TextureFormat::Rgba16Float,
-                wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
-                &[0; 8],
-            );
-            let phases = ffx_fsr2_get_jitter_phase_count(
-                i32::try_from(render.width).unwrap(),
-                i32::try_from(display.width).unwrap(),
-            );
-            for frame in 0..phases + 1 {
-                let (x, y) = ffx_fsr2_get_jitter_offset(frame, phases).unwrap();
-                let mut description = FfxFsr2DispatchDescription {
-                    jitter_offset: FfxFloatCoords2D { x, y },
-                    motion_vector_scale: FfxFloatCoords2D {
-                        x: render.width as f32,
-                        y: render.height as f32,
+            if !fsr2_stays_in_range(display, render, [0., 0.], false) {
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn fsr2_upscales_a_uniform_frame_with_off_screen_history_to_the_same_value_at_every_texel() {
+        // Defect: a new sample at the frame's edge (its history off screen,
+        // or a reset) is written as the frame's Lanczos upsample, and where
+        // the taps off the render area leave on-screen weights summing to
+        // FSR2_EPSILON or less, the SDK writes that colour unnormalised
+        // (SDK-P36: ffx_fsr2_upsample.h:447 and ffx_fsr2_accumulate.h:271):
+        // at Ultra Performance, negative where the negative lobe outweighs
+        // the rest. Expected, independently of the shader: a frame of one
+        // grey moving 6 display pixels a frame to the right, nothing
+        // reactive, comes out as that grey at every texel on every phase,
+        // within the two binary16 stores it passes through.
+        use sp_fidelity::fsr2::*;
+        for quality in [
+            FfxFsr2QualityMode::UltraPerformance,
+            FfxFsr2QualityMode::Performance,
+        ] {
+            let render = ffx_fsr2_get_render_resolution_from_quality_mode(37, 23, quality).unwrap();
+            if !fsr2_stays_in_range((37, 23), render, [-6. / 37., 0.], false) {
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn fsr2_keeps_a_band_meeting_the_frame_s_edges_within_the_frame_s_range() {
+        // Defect: a tap off the render area loads zero (`ClampLoad` with a
+        // zero offset clamps nothing) and widens the accumulate pass's
+        // deringing bounds (SDK-P37: ffx_fsr2_upsample.h:326, the
+        // rectification box's aabbMin), so at the frame's left and right
+        // edges the Lanczos upsample's undershoot beside a brighter band is
+        // not clamped: the grey there drops by up to 16 % at native
+        // resolution. Expected, independently of the shader: a grey frame
+        // with a brighter band of rows across its full width, at rest,
+        // nothing reactive, stays within its range, the grey to the band's,
+        // at every texel on every phase, within the two binary16 stores it
+        // passes through.
+        use sp_fidelity::fsr2::*;
+        let quality =
+            ffx_fsr2_get_render_resolution_from_quality_mode(37, 23, FfxFsr2QualityMode::Quality)
+                .unwrap();
+        for render in [(37, 23), quality] {
+            if !fsr2_stays_in_range((37, 23), render, [0., 0.], true) {
+                return;
+            }
+        }
+    }
+
+    /// Runs FSR2 through the backend on a frame of one grey, with a brighter
+    /// band of rows across its full width (its middle third) if `band`,
+    /// moving by `motion` (UV a frame, previous minus current), infinitely
+    /// far, over every jitter phase from a reset, and asserts every output
+    /// texel lies within the frame's range (the grey, or the grey to the
+    /// band's) widened by the two binary16 stores it passes through (the
+    /// history and the output). False when no adapter is available.
+    fn fsr2_stays_in_range(
+        display: (u32, u32),
+        render: (u32, u32),
+        motion: [f32; 2],
+        band: bool,
+    ) -> bool {
+        use sp_fidelity::fsr2::*;
+        let Some((device, queue)) = device() else {
+            return false;
+        };
+        // The grey, the band's, and the band's render rows.
+        const GREY: f32 = 0.25;
+        const BAND: f32 = 1.;
+        let rows = render.1 / 3..render.1 * 2 / 3;
+        let (low, high) = (
+            GREY * (1. - 2. / 2048.),
+            if band { BAND } else { GREY } * (1. + 2. / 2048.),
+        );
+        let display = FfxDimensions2D {
+            width: display.0,
+            height: display.1,
+        };
+        let render = FfxDimensions2D {
+            width: render.0,
+            height: render.1,
+        };
+        let (backend, interface) = ffx_get_interface_wgpu(&device);
+        let mut context = FfxFsr2Context::default();
+        ffx_fsr2_context_create(
+            &mut context,
+            &FfxFsr2ContextDescription {
+                flags: FFX_FSR2_ENABLE_HIGH_DYNAMIC_RANGE
+                    | FFX_FSR2_ENABLE_DEPTH_INVERTED
+                    | FFX_FSR2_ENABLE_DEPTH_INFINITE,
+                max_render_size: display,
+                display_size: display,
+                fp_message: None,
+                backend_interface: interface,
+            },
+        )
+        .unwrap();
+        let texture = |size: FfxDimensions2D, format: wgpu::TextureFormat, usage, data: &[u8]| {
+            device.create_texture_with_data(
+                &queue,
+                &wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d {
+                        width: size.width,
+                        height: size.height,
+                        depth_or_array_layers: 1,
                     },
-                    render_size: render,
-                    frame_time_delta: 16.6,
-                    pre_exposure: 1.,
-                    reset: frame == 0,
-                    camera_near: f32::MAX,
-                    camera_far: 0.1,
-                    camera_fov_angle_vertical: 1.,
-                    view_space_to_meters_factor: 1.,
-                    ..Default::default()
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format,
+                    usage,
+                    view_formats: &[],
+                },
+                wgpu::util::TextureDataOrder::LayerMajor,
+                data,
+            )
+        };
+        let texels = |size: FfxDimensions2D| (size.width * size.height) as usize;
+        let read = wgpu::TextureUsages::TEXTURE_BINDING;
+        let colors: Vec<f32> = (0..render.height)
+            .flat_map(|y| {
+                let v = if band && rows.contains(&y) {
+                    BAND
+                } else {
+                    GREY
                 };
-                {
-                    let mut backend = backend.borrow_mut();
-                    let state = FFX_RESOURCE_STATE_COMPUTE_READ;
-                    description.command_list = backend.ffx_get_command_list_wgpu(
-                        device.create_command_encoder(&Default::default()),
+                [v, v, v, 1.].repeat(render.width as usize)
+            })
+            .collect();
+        let color = texture(
+            render,
+            wgpu::TextureFormat::Rgba32Float,
+            read,
+            bytemuck::cast_slice(&colors),
+        );
+        // Infinitely far, reversed-Z.
+        let depth = texture(
+            render,
+            wgpu::TextureFormat::R32Float,
+            read,
+            &[0; 4].repeat(texels(render)),
+        );
+        let motion = texture(
+            render,
+            wgpu::TextureFormat::Rg32Float,
+            read,
+            bytemuck::cast_slice(&motion.repeat(texels(render))),
+        );
+        let output = texture(
+            display,
+            wgpu::TextureFormat::Rgba16Float,
+            wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_SRC,
+            &[0; 8].repeat(texels(display)),
+        );
+        let phases = ffx_fsr2_get_jitter_phase_count(
+            i32::try_from(render.width).unwrap(),
+            i32::try_from(display.width).unwrap(),
+        );
+        for frame in 0..phases + 1 {
+            let (x, y) = ffx_fsr2_get_jitter_offset(frame, phases).unwrap();
+            let mut description = FfxFsr2DispatchDescription {
+                jitter_offset: FfxFloatCoords2D { x, y },
+                motion_vector_scale: FfxFloatCoords2D {
+                    x: render.width as f32,
+                    y: render.height as f32,
+                },
+                render_size: render,
+                frame_time_delta: 16.6,
+                pre_exposure: 1.,
+                reset: frame == 0,
+                camera_near: f32::MAX,
+                camera_far: 0.1,
+                camera_fov_angle_vertical: 1.,
+                view_space_to_meters_factor: 1.,
+                ..Default::default()
+            };
+            {
+                let mut backend = backend.borrow_mut();
+                let state = FFX_RESOURCE_STATE_COMPUTE_READ;
+                description.command_list = backend
+                    .ffx_get_command_list_wgpu(device.create_command_encoder(&Default::default()));
+                description.color = backend.ffx_get_resource_wgpu(&color, "color", state);
+                description.depth = backend.ffx_get_resource_wgpu(&depth, "depth", state);
+                description.motion_vectors =
+                    backend.ffx_get_resource_wgpu(&motion, "motion", state);
+                description.output = backend.ffx_get_resource_wgpu(
+                    &output,
+                    "output",
+                    FFX_RESOURCE_STATE_UNORDERED_ACCESS,
+                );
+            }
+            ffx_fsr2_context_dispatch(&mut context, &description).unwrap();
+            let mut encoder = backend
+                .borrow_mut()
+                .ffx_take_command_list_wgpu(description.command_list)
+                .unwrap();
+            let readback = readback::Readback::texture(&device, &mut encoder, &output, 0);
+            queue.submit([encoder.finish()]);
+            let texels = readback::Readback::read_all(&device, vec![readback]).remove(0);
+            for (i, texel) in texels.chunks_exact(8).enumerate() {
+                for channel in texel[..6].chunks_exact(2) {
+                    let value = half_to_f32(u16::from_le_bytes([channel[0], channel[1]]));
+                    assert!(
+                        (low..=high).contains(&value),
+                        "{}x{} from {}x{}, jitter phase {frame} ({x}, {y}): texel ({}, {}) is {value}",
+                        display.width,
+                        display.height,
+                        render.width,
+                        render.height,
+                        i as u32 % display.width,
+                        i as u32 / display.width,
                     );
-                    description.color = backend.ffx_get_resource_wgpu(&color, "color", state);
-                    description.depth = backend.ffx_get_resource_wgpu(&depth, "depth", state);
-                    description.motion_vectors =
-                        backend.ffx_get_resource_wgpu(&motion, "motion", state);
-                    description.output = backend.ffx_get_resource_wgpu(
-                        &output,
-                        "output",
-                        FFX_RESOURCE_STATE_UNORDERED_ACCESS,
-                    );
-                }
-                ffx_fsr2_context_dispatch(&mut context, &description).unwrap();
-                let mut encoder = backend
-                    .borrow_mut()
-                    .ffx_take_command_list_wgpu(description.command_list)
-                    .unwrap();
-                let readback = readback::Readback::texture(&device, &mut encoder, &output, 0);
-                queue.submit([encoder.finish()]);
-                let texels = readback::Readback::read_all(&device, vec![readback]).remove(0);
-                for (i, texel) in texels.chunks_exact(8).enumerate() {
-                    for channel in texel[..6].chunks_exact(2) {
-                        let value = half_to_f32(u16::from_le_bytes([channel[0], channel[1]]));
-                        assert!(
-                            (value - GREY).abs() <= TOLERANCE,
-                            "{}x{} from {}x{}, jitter phase {frame} ({x}, {y}): texel ({}, {}) is {value}",
-                            display.width,
-                            display.height,
-                            render.width,
-                            render.height,
-                            i as u32 % display.width,
-                            i as u32 / display.width,
-                        );
-                    }
                 }
             }
-            ffx_fsr2_context_destroy(&mut context).unwrap();
         }
+        ffx_fsr2_context_destroy(&mut context).unwrap();
+        true
     }
 
     /// An IEEE binary16 value.

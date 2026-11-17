@@ -139,6 +139,19 @@ CORRECTIONS = {
         'SDK-P35': [('fsr2/ffx_fsr2_upsample.h',
                      'fBoxSampleWeight = exp(fRectificationCurveBias * fSrcSampleOffsetSq);',
                      'fBoxSampleWeight = exp(fRectificationCurveBias * fSrcSampleOffsetSq) * fOnScreenFactor;')],
+        # A sample whose on-screen Lanczos weights sum to FSR2_EPSILON or less
+        # takes the rectification box's centre, as ffx_fsr3upscaler_upsample.h:635
+        # does for a sample without history, not the unnormalised sum.
+        'SDK-P36': [('fsr2/ffx_fsr2_upsample.h',
+                     '        Deringing(clippingBox, fColorAndWeight.xyz);\n    }\n',
+                     '        Deringing(clippingBox, fColorAndWeight.xyz);\n    } else {\n'
+                     '        fColorAndWeight.xyz = clippingBox.boxCenter;\n    }\n')],
+        # Taps load clamped coordinates, as the Xbox path of the same function
+        # does (ffx_fsr2_upsample.h:275-311), so off-screen taps no longer widen
+        # the deringing bounds with zeros or stale texels.
+        'SDK-P37': [('fsr2/ffx_fsr2_upsample.h',
+                     'ClampLoad(iSrcSamplePos, FfxInt32x2(0, 0), FfxInt32x2(RenderSize()));',
+                     'clamp(iSrcSamplePos, FfxInt32x2(0, 0), FfxInt32x2(RenderSize()) - FfxInt32x2(1, 1));')],
     },
 }
 
@@ -186,14 +199,17 @@ def main():
     p.add_argument('--pass-name', action='append', help='default: every pass of the effect')
     p.add_argument('--dxc', type=Path, required=True)
     p.add_argument('--spirv-cross', type=Path, required=True)
-    p.add_argument('--correction', choices=sorted({c for cs in CORRECTIONS.values() for c in cs}),
-                   help='apply a verified upstream fix; default output: shaders/generated/<effect>-<correction>/')
+    p.add_argument('--correction', action='append', default=[],
+                   choices=sorted({c for cs in CORRECTIONS.values() for c in cs}),
+                   help='apply a verified upstream fix, repeated for several; default output: '
+                        'shaders/generated/<effect>-<correction>[-<correction>...]/')
     p.add_argument('--output', type=Path, help='default: shaders/generated/<effect>/options-<options>')
     a = p.parse_args()
     effect = EFFECTS[a.effect]
-    if a.correction and a.correction not in CORRECTIONS.get(a.effect, {}):
-        p.error(f'{a.correction} does not apply to {a.effect}')
-    generated = a.effect + (f'-{a.correction.lower()}' if a.correction else '')
+    for correction in a.correction:
+        if correction not in CORRECTIONS.get(a.effect, {}):
+            p.error(f'{correction} does not apply to {a.effect}')
+    generated = a.effect + ''.join(f'-{c.lower()}' for c in a.correction)
     stages = [name for name, _ in effect['passes']]
     supported_stages = [name for name, stem in effect['passes'] if stem is not None]
     for name in a.pass_name or []:
@@ -213,20 +229,21 @@ def main():
         lambda m: f'[[vk::image_format("{effect["formats"][m[2]]}")]] {m[0]}' if m[2] in effect['formats'] else m[0],
         path.read_text())
     path.write_text(code)
-    for header, original, corrected in CORRECTIONS.get(a.effect, {}).get(a.correction, []):
-        path = gpu / header
-        code = path.read_text()
-        if code.count(original) != 1:
-            raise SystemExit(f'{a.correction}: {header} no longer has exactly one {original!r}')
-        path.write_text(code.replace(original, corrected))
+    for correction in a.correction:
+        for header, original, corrected in CORRECTIONS[a.effect][correction]:
+            path = gpu / header
+            code = path.read_text()
+            if code.count(original) != 1:
+                raise SystemExit(f'{correction}: {header} no longer has exactly one {original!r}')
+            path.write_text(code.replace(original, corrected))
     version = subprocess.run([str(a.dxc.resolve()), '--version'], capture_output=True, text=True, check=True)
     manifest_path = out / 'manifest.json'
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else dict(
         sdkRevision=REVISION, effect=a.effect, stages=stages, forceWave64Flag=effect['force_wave64'],
-        compiler=version.stdout.strip(), passes={}, **({'corrections': [a.correction]} if a.correction else {}))
+        compiler=version.stdout.strip(), passes={}, **({'corrections': a.correction} if a.correction else {}))
     if manifest['effect'] != a.effect or manifest['stages'] != stages:
         raise SystemExit(f'{manifest_path} belongs to another effect')
-    if manifest.get('corrections', []) != ([a.correction] if a.correction else []):
+    if manifest.get('corrections', []) != a.correction:
         raise SystemExit(f'{manifest_path} has other corrections')
     defines = [f'-D{define}={int(bool(a.options & bit))}' for bit, define in effect['options']]
     includes = [arg for directory in effect['includes'] for arg in ('-I', gpu / directory)]

@@ -54,7 +54,7 @@ Counts are output dumps.
 | Pass | Permutations | Result |
 | --- | --- | --- |
 | RCAS | all 64 option combinations (FP32; the SDK accessor never selects FP16 for RCAS); 1×1, 16×16, 37×23, 130×67 and 1920×1080; sharpness 0–1, exposure and pre-exposure 0→1, flat and black inputs | bit-exact (1,285 RGBA16F outputs; also bit-exact with an RGBA32F diagnostic output) |
-| Accumulate and accumulate + sharpen | all 64 option combinations × FP32 and FP16; upscale 1.0–3.0 with odd sizes, partial tiles and a maximum render size above the render size, plus 1920×1080-class low-resolution motion; application, default and auto exposure; resets | against the HLSL with SDK-P35 corrected; strict (both compiled without fast math or contraction, DXC's six constant folds applied to the WGSL): bit-exact, 11,570 dumps. With wgpu's fast math on both sides (SDK-P22), 4,331 differ with identical inputs and 4,411 when each side carries its own history; recorded, not bounded |
+| Accumulate and accumulate + sharpen | all 64 option combinations × FP32 and FP16; upscale 1.0–3.0 with odd sizes, partial tiles and a maximum render size above the render size, plus 1920×1080-class low-resolution motion; application, default and auto exposure; resets | against the HLSL with SDK-P35, SDK-P36 and SDK-P37 corrected; strict (both compiled without fast math or contraction, DXC's six constant folds applied to the WGSL): bit-exact, 11,570 dumps. With wgpu's fast math on both sides (SDK-P22), 4,327 differ with identical inputs and 4,407 when each side carries its own history; recorded, not bounded |
 | Reconstruct and dilate | every permutation | bit-exact, 9,240 dumps |
 | Lock | every permutation | bit-exact, 4,620 dumps |
 | Generate reactive | every permutation | bit-exact, 12,320 dumps |
@@ -317,6 +317,8 @@ Adaptation IDs are stable and may have gaps.
 | SDK-P27 | wgpu rejects a view of a mip the texture lacks | FSR2 binds the luminance pyramid's `rw_img_mip_shading_change` and `rw_img_mip_5` to mips 4 and 5 of `FSR2_ExposureMips` whatever its size (`ffx_fsr2.cpp:669–678, 998–1004`); below a 64-pixel maximum render size the texture lacks mip 5, and below 32 mip 4 too. The backend binds the texture's last mip, as AMD's Vulkan backend does (`sdk/src/backends/vk/ffx_vk.cpp:3769–3771` at the SDK revision; the DX12 backend, `sdk/src/backends/dx12/ffx_dx12.cpp:3052` at the SDK revision, indexes past the resource's own descriptors). SPD stores to mip 4 or 5 only when its mip count, from the render size, reaches it (`ffx_fsr2_compute_luminance_pyramid.h:70–72`, `ffx_spd.h:68`), so nothing is written through a substituted view (render size within the maximum), and sizes that have the mips bind them unchanged. |
 | SDK-P28 | wgpu reports an object it rejects when it is created, but the error of recording it only when the encoder finishes, and then the whole encoder, with the application's own work in it, is invalid | A clear or compute job creates its new views and bind group inside validation and out-of-memory error scopes and, if wgpu rejects any, fails before recording them with `FFX_ERROR_BACKEND_API_ERROR`, the code AMD's DX12 backend returns for a failed job (`sdk/src/backends/dx12/ffx_dx12.cpp:3501–3504` at the SDK revision), and wgpu's message. `fpExecuteGpuJobs` stops at the first failed job and executes none after it, which the valid encoder depends on; AMD's DX12 `ExecuteGpuJobsDX12` instead records every job and keeps overwriting its error code (`ffx_dx12.cpp:3461–3499`). Godot's FSR2 backend stops at the first failed job (`execute_gpu_jobs_rd`, `servers/rendering/renderer_rd/effects/fsr2.cpp:479–482` at Godot b130438), fails a job whose UAV view it could not create before recording it (`execute_gpu_job_compute_rd`, `fsr2.cpp:424`), and its RenderingDevice refuses to bind an invalid uniform set (`servers/rendering/rendering_device.cpp:6884–6885`). `ffxFsr2ContextDispatch` ignores `fpExecuteGpuJobs`'s result (`ffx_fsr2.cpp:1321`), as the port does, so the backend keeps the first failure's code and message for `take_job_error`. A failed job records nothing invalid: what it records before its check, a compute job's SDK-P23 conversion copy, is valid (a job observer's commands are the observer's own). Only new objects are checked: a bind group a pipeline kept was checked when it was made, so a texture destroyed after that is recorded and fails at `queue.submit`; and invalid inputs can still invalidate the encoder while a job records, for example one texture passed as both an input and the output (a usage conflict). On WebGPU the scopes resolve only after the call, so there the error stays deferred to `finish`. |
 | SDK-P35 | FSR2 accumulate weights taps outside the render size into its rectification box | A verified upstream bug, corrected in the port's WGSL; see below. |
+| SDK-P36 | FSR2 accumulate writes a new sample's upsample unnormalised when its on-screen weights sum to `FSR2_EPSILON` or less | A verified upstream bug, corrected in the port's WGSL; see below. |
+| SDK-P37 | FSR2 accumulate's deringing bounds take taps outside the render size | A verified upstream bug, corrected in the port's WGSL; see below. |
 
 ### SDK-P33 — padded frame-interpolation game-field invocations
 
@@ -504,8 +506,8 @@ box weight by `fOnScreenFactor`, so its off-screen taps reach neither sum. The
 Xbox-only paired path of the same FSR2 file loads clamped coordinates
 (lines 297–311). The port applies FSR3's weighting
 (`shaders/wgsl/fsr2/ffx_fsr2_upsample.wgsl`). Both versions still widen the box's
-`aabbMin`/`aabbMax` with every tap (`RectificationBoxAddSample`); that bound only
-loosens the variance box and is retained unchanged.
+`aabbMin`/`aabbMax` with every tap (`RectificationBoxAddSample`). That bound is
+also the deringing clamp, which SDK-P37 corrects.
 
 Evidence. `sp-fidelity-wgpu`'s
 `fsr2_upscales_a_uniform_frame_to_the_same_value_at_every_texel` runs FSR2
@@ -519,8 +521,110 @@ pass itself would keep (HDR FP32 and FP16, LDR; native 37×23 and 67×45 from
 37×23 to 0.2146 in every permutation, while the port and the corrected HLSL
 stay uniform and match exactly. The compile tool builds the corrected
 reference with `--correction SDK-P35` (a replacement in its working copy of
-the SDK headers; `vendor/` is unchanged), into `shaders/generated/fsr2-sdk-p35`;
-the accumulate comparison above is against it.
+the SDK headers; `vendor/` is unchanged), into `shaders/generated/fsr2-sdk-p35`.
+The accumulate comparison above is against the reference with SDK-P35, SDK-P36
+and SDK-P37 corrected (`shaders/generated/fsr2-sdk-p35-sdk-p36-sdk-p37`).
+
+### SDK-P36 — FSR2 accumulate writes a weightless upsample unnormalised
+
+A verified bug in AMD's FSR2 HLSL, corrected in the port. `ComputeUpsampledColorAndWeight`
+gives taps off the render area Lanczos weight 0 (`fOnScreenFactor`,
+`ffx_fsr2_upsample.h:428–429`) and normalises and derings the colour only when
+the remaining weights sum above `FSR2_EPSILON` (lines 447–455); otherwise it
+returns the weighted sum unnormalised, with weight 0. A new sample, one whose
+history is off screen or any texel of a reset frame, takes that colour as its
+history and output (`ffx_fsr2_accumulate.h:270–271`). Its kernel bias is 1
+(lines 338–343), so the weights are Lanczos 2 of the tap offsets. Near the
+frame's edge at ratios near 2 and above, the kernel can lose its near taps off
+screen and keep only taps in Lanczos 2's negative lobe (1 < d < 2): the sum
+falls below `FSR2_EPSILON`, often below zero, and the colour written is
+`Σ wᵢcᵢ`, for a uniform frame `c·Σwᵢ`: dark, or negative. The sign comes from
+the negative lobe, not from YCoCg or RCAS.
+
+At 99×61 from 33×21 (ratio 3), jitter phase 8 (0.0625, −0.463), texel (4, 0):
+the render row −1 taps, among them the nearest (offset (−0.06, −0.21), weight
+0.92), are off screen and the six left sum to −0.0511, so a 0.25 grey is
+written as −0.012783 by hand and −0.012779 on the GPU; on phase 7, texel (0, 3),
+−0.0231 gives −0.0057718 and −0.0057716. At 192×108 from 64×36 (sgl#809) the
+lowest sum over the 72 phases is −0.089, at texel (3, 0): −0.0045 for a 0.05
+sky, reported there as −0.0042 every eighth frame. At ratio 2 exactly the
+lowest at 192×108 is +0.014, but 37×23 from 18×11 (2.06) reaches −0.18.
+
+FSR3 handles the same situation: a pixel whose reprojection leaves the screen
+has no accumulation (`ffx_fsr3upscaler_prepare_reactivity.h:203–211`), and such
+a sample takes the rectification box's centre as its colour
+(`ffx_fsr3upscaler_upsample.h:635–643`); FSR3 also clamps its output at zero
+(`ffx_fsr3upscaler_accumulate.h:163`). The port takes the box centre only where
+FSR2 leaves the colour unnormalised (`shaders/wgsl/fsr2/ffx_fsr2_upsample.wgsl`),
+keeping FSR2's Lanczos upsample for every other new sample and the weight of 0
+the SDK returns. The centre is the weighted mean of the on-screen taps
+(SDK-P35), so a uniform frame stays uniform. The zero clamp is not taken: the
+negative value came from the unnormalised sum, and the prepared colours are
+clamped at zero (`ComputePreparedInputColor`).
+
+Evidence. `sp-fidelity-wgpu`'s
+`fsr2_upscales_a_uniform_frame_with_off_screen_history_to_the_same_value_at_every_texel`
+runs FSR2 through the backend at 37×23 from Ultra Performance's 12×7 and
+Performance's 18×11, a grey moving 6 display pixels a frame to the right, over
+every jitter phase: every texel must stay grey within two binary16 stores.
+Without the correction it fails at 12×7 on phase 7, texel (0, 3), −0.00839,
+and at 18×11 on phase 26, texel (4, 0), −0.000185. In the oracle,
+`fsr2_passes::accumulate_keeps_a_uniform_frame_uniform_where_history_is_off_screen`
+runs the accumulate pass at 99×61 from 33×21 with that motion (HDR FP32 and
+FP16, LDR): the unchanged HLSL, and the HLSL with only SDK-P35 corrected, write
+−0.012779 at texel (4, 0), while the port and the corrected HLSL stay grey and
+match exactly. The compile tool's `--correction SDK-P36` builds the reference.
+
+### SDK-P37 — FSR2 accumulate deringing bounds take off-screen taps
+
+A verified bug in AMD's FSR2 HLSL, corrected in the port. The taps of
+`ComputeUpsampledColorAndWeight` load through `ClampLoad` with a zero offset,
+which clamps nothing (SDK-P35), so a tap off the render area loads zero, or a
+stale texel beyond the render size. `RectificationBoxAddSample` widens
+`aabbMin`/`aabbMax` with every tap (`ffx_fsr2_common.h:163–164`), and those
+bounds are `Deringing`'s clamp of the Lanczos upsample (`ffx_fsr2_upsample.h:454`)
+and the outer limit of the history clamp (`ffx_fsr2_accumulate.h:79–80`). In
+the frame, the clamp removes the Lanczos undershoot beside a brighter feature;
+at the frame's edges the zero (or the stale texel) lets it through.
+
+Native 37×23, a 0.25 grey with a 1.0 band in render rows 7–14, reset frame,
+jitter phase 0 (0, −1/6), texel (0, 6): the band's taps at offsets (0, 1.17)
+and (1, 1.17) weigh −0.104 and −0.094, and the normalised upsample is 0.06098
+by hand. One column in, the 3×3 bounds are [0.25, 1] and clamp it to 0.25; at
+the edge, column −1 loads zeros, the bounds are [0, 1], and 0.06097 is written
+on the GPU. In the oracle's case below (a band in render rows 8–13, at rest)
+the edge texel beside the band is still up to 10 % low after five frames
+(0.2263 at texel (0, 7)). At 67×45 from 45×30 with stale texels beyond the render
+size the upper bound widens too: 1.00195 over a 1.0 band at texel (66, 19).
+sgl#808 measured 0.0443 at the right-edge texel beside a 0.5 card on a 0.05 sky
+at native 192×108; the port reproduces it in that scene, 0.0417–0.0443, and
+gives 0.04999 with the correction.
+
+FSR3's upsample has the same load (`ffx_fsr3upscaler_upsample.h:417`) and
+bounds, so it is no precedent here. FSR3 nevertheless stays in range in that
+scene, in sgl#808 and through this port's FSR3 (0.04999 at rest and at 1.5 and
+4 pixels a frame); why its own copy does not show there is not established. The Xbox path of the same FSR2 function
+loads clamped coordinates (`__XB_Med3_I32` into `[0, RenderSize() − 1]`,
+`ffx_fsr2_upsample.h:275–311`), as does `ClampLoad`'s commented-out body
+(`ffx_fsr2_common.h:367`). The port loads clamped coordinates. An off-screen
+tap then repeats an on-screen tap of the same 3×3; its Lanczos and box
+weights stay 0 (SDK-P35), so only the bounds change, to those of the on-screen
+taps.
+
+Evidence. `sp-fidelity-wgpu`'s
+`fsr2_keeps_a_band_meeting_the_frame_s_edges_within_the_frame_s_range` runs FSR2
+through the backend at 37×23 native and from Quality's render size, a grey
+frame with a brighter band across its middle third, at rest, over every jitter
+phase: every texel must stay within the grey and the band's grey, widened by
+two binary16 stores. Without the correction it fails at native on phase 0,
+texel (0, 6), 0.06097. In the oracle,
+`fsr2_passes::accumulate_keeps_a_band_within_the_frame_s_range_at_its_edges`
+runs the accumulate pass with that band at 37×23 native and 67×45 from 45×30
+with stale texels beyond it (HDR FP32 and FP16, LDR): the unchanged HLSL, and
+the HLSL with only SDK-P35 corrected, leave the range at the left and right
+edges (down to 0.2263 and up to 1.00195), while the port and the corrected HLSL
+keep it and match exactly. The compile tool's `--correction SDK-P37` builds
+the reference.
 
 ### SDK-P14 — SPD hand-off between workgroups
 

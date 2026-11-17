@@ -14,8 +14,10 @@ A standalone, unofficial Rust and WGSL port with documented corrections of the F
 source in [AMD FidelityFX SDK 1.1.4](crates/sp-fidelity/vendor/sdk-1.1.4/source-revision.txt),
 produced entirely using AI coding agents, with a wgpu backend.
 Not affiliated with, endorsed by, or supported by AMD. Vendored C++/HLSL remains
-unchanged; the port's corrections of verified SDK bugs (FSR2's accumulate border
-taps, [SDK-P35](crates/sp-fidelity/CONFORMANCE.md#sdk-p35--fsr2-accumulate-border-taps-in-the-rectification-box))
+unchanged; the port's corrections of verified SDK bugs (FSR2's accumulate at the
+frame's edges, [SDK-P35](crates/sp-fidelity/CONFORMANCE.md#sdk-p35--fsr2-accumulate-border-taps-in-the-rectification-box),
+[SDK-P36](crates/sp-fidelity/CONFORMANCE.md#sdk-p36--fsr2-accumulate-writes-a-weightless-upsample-unnormalised)
+and [SDK-P37](crates/sp-fidelity/CONFORMANCE.md#sdk-p37--fsr2-accumulate-deringing-bounds-take-off-screen-taps))
 and Rust-only frame-interpolation corrections and their limits are described
 in the [conformance record](crates/sp-fidelity/CONFORMANCE.md#sdk-p34--outgoing-stationary-geometry).
 

@@ -50,12 +50,18 @@ events, and 64,005 bit-exact GPU output comparisons**.
 [CONFORMANCE.md](https://github.com/stevepryde/sp-fidelity/blob/main/crates/sp-fidelity/CONFORMANCE.md)
 records the full results, adaptations and known differences. GPU results
 are from Apple Metal; DX12/Vulkan conformance is not yet established.
-FSR2's accumulate pass corrects a verified SDK bug that darkened frame corners
-([SDK-P35](CONFORMANCE.md#sdk-p35--fsr2-accumulate-border-taps-in-the-rectification-box));
-it is compared with the original HLSL with that correction applied.
-Since 0.3.1 it changes FSR2's output near the frame's edges, where the
-render-resolution neighbourhood extends past the render size; the API is
-unchanged and applications need no code changes.
+FSR2's accumulate pass corrects verified SDK bugs at the frame's edges, where
+the render-resolution neighbourhood extends past the render size: taps there
+darkened corners through the rectification box
+([SDK-P35](CONFORMANCE.md#sdk-p35--fsr2-accumulate-border-taps-in-the-rectification-box))
+and let ringing past the deringing bounds
+([SDK-P37](CONFORMANCE.md#sdk-p37--fsr2-accumulate-deringing-bounds-take-off-screen-taps)),
+and a new sample whose filter weights vanished there was written unnormalised,
+dark or negative
+([SDK-P36](CONFORMANCE.md#sdk-p36--fsr2-accumulate-writes-a-weightless-upsample-unnormalised)).
+It is compared with the original HLSL with those corrections applied.
+They change FSR2's output only near the frame's edges; the API is unchanged
+and applications need no code changes.
 
 Frame-generation diagnostics, limitations, and the documented Rust/WGSL
 corrections remain in [CONFORMANCE.md](CONFORMANCE.md#sdk-p34--outgoing-stationary-geometry).

@@ -11,8 +11,10 @@
 !/generated/fsr2/options-0x86/
 !/generated/fsr2/options-0xa5/
 !/generated/fsr2/options-0xa6/
-# SDK-P35's corrected accumulate reference (README.md#regeneration).
+# The corrected accumulate references (README.md#regeneration): SDK-P35 alone,
+# the control for SDK-P36 and SDK-P37, and all three.
 /generated/fsr2-sdk-p35/
+/generated/fsr2-sdk-p35-sdk-p36-sdk-p37/
 
 # FSR3 upscaler host oracle variants.
 /generated/fsr3upscaler/options-*/

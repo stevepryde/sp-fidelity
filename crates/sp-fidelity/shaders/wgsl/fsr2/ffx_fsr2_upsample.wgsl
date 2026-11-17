@@ -142,7 +142,15 @@ fn ComputeUpsampledColorAndWeight(params: AccumulationPassCommonParams,
                 let sampleColRow: FfxInt32x2 = FfxInt32x2(select(col, (3 - col), bFlipCol), select(row, (3 - row), bFlipRow));
                 let iSrcSamplePos: FfxInt32x2 = FfxInt32x2(iSrcInputPos) + offsetTL + sampleColRow;
 
-                let sampleCoord: FfxInt32x2 = ClampLoad_i32x2_i32x2_i32x2(iSrcSamplePos, FfxInt32x2(0, 0), FfxInt32x2(RenderSize()));
+                // SDK-P37: an upstream bug. ClampLoad with a zero offset
+                // clamps nothing (ffx_fsr2_common.h:358-365), so a tap off
+                // the render area loads zero, or a stale texel beyond the
+                // render size, and widens the deringing bounds
+                // (RectificationBoxAddSample's aabbMin/aabbMax): a Lanczos
+                // undershoot at the frame's edge is then not clamped.
+                // Clamped coordinates, as the Xbox path of the same function
+                // loads (ffx_fsr2_upsample.h:275-311).
+                let sampleCoord: FfxInt32x2 = clamp(iSrcSamplePos, FfxInt32x2(0, 0), FfxInt32x2(RenderSize()) - FfxInt32x2(1, 1));
 
                 fSamples[iSampleIndex] = LoadPreparedInputColor(FfxUInt32x2(FfxInt32x2(sampleCoord)));
             }
@@ -191,7 +199,9 @@ fn ComputeUpsampledColorAndWeight(params: AccumulationPassCommonParams,
                 // the render size loads zero, and the SDK weights it into the
                 // box regardless (line 436), darkening the history clamped to
                 // it at the frame's corners. Weighted by fOnScreenFactor as
-                // FSR3 does (ffx_fsr3upscaler_upsample.h:611).
+                // FSR3 does (ffx_fsr3upscaler_upsample.h:611); with SDK-P37's
+                // clamped loads the tap would otherwise repeat an edge texel
+                // at its own offset.
                 let fBoxSampleWeight: FfxFloat32 = exp(fRectificationCurveBias * fSrcSampleOffsetSq) * fOnScreenFactor;
 
                 let bInitialSample: FfxBoolean = (row == 0) && (col == 0);
@@ -216,6 +226,15 @@ fn ComputeUpsampledColorAndWeight(params: AccumulationPassCommonParams,
         var fColor: FfxFloat32x3 = fColorAndWeight.xyz;
         Deringing_RectificationBox_f32x3(*clippingBox, &fColor);
         fColorAndWeight = FfxFloat32x4(fColor, fColorAndWeight.w);
+    } else {
+        // SDK-P36: an upstream bug. Where the on-screen Lanczos weights sum
+        // to FSR2_EPSILON or less (taps off the render area at a ratio near
+        // 3, the near ones excluded, leave the negative lobe), the SDK
+        // returns the colour unnormalised (line 447), and a new sample
+        // writes it as its history (ffx_fsr2_accumulate.h:271): dark, or
+        // negative. Takes the rectification box's centre, as FSR3 does for
+        // a sample without history (ffx_fsr3upscaler_upsample.h:635).
+        fColorAndWeight = FfxFloat32x4((*clippingBox).boxCenter, fColorAndWeight.w);
     }
 
     return fColorAndWeight;
