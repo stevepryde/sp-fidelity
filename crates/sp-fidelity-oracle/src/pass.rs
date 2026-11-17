@@ -95,6 +95,17 @@ pub struct Pipeline {
 
 /// The contents the first job that binds `name` supplies: a created
 /// resource's initialization data, an application resource's first input.
+/// A file of a compiled oracle variant; most variants are generated before
+/// a Metal oracle run rather than tracked.
+fn compiled(path: &Path) -> Vec<u8> {
+    fs::read(path).unwrap_or_else(|e| {
+        panic!(
+            "{}: {e}; generate the variant first (crates/sp-fidelity-oracle/shaders/README.md)",
+            path.display()
+        )
+    })
+}
+
 fn initial<'a>(jobs: &'a [Job], name: &str) -> Option<&'a Vec<u8>> {
     jobs.iter()
         .find(|j| j.bindings.iter().any(|b| b.resource == name))
@@ -235,15 +246,12 @@ pub fn run(
 ) {
     let stage = effect.stages[pipeline.pass as usize];
     let device = &gpu.device;
-    let reflection: Value = serde_json::from_slice(
-        &fs::read(
-            effect
-                .shaders()
-                .join(format!("options-{:#04x}", pipeline.options))
-                .join(format!("{stage}.reflection.json")),
-        )
-        .expect("a variant compiled for the pass and options"),
-    )
+    let reflection: Value = serde_json::from_slice(&compiled(
+        &effect
+            .shaders()
+            .join(format!("options-{:#04x}", pipeline.options))
+            .join(format!("{stage}.reflection.json")),
+    ))
     .unwrap();
 
     write_trace(directory, resources, pipeline, jobs);
@@ -847,12 +855,12 @@ pub fn strict_variants(
     let stage = effect.stages[pipeline.pass as usize];
     let variant = format!("options-{:#04x}", pipeline.options);
     let original = effect.shaders().join(&variant);
-    let mut reflection: Value = serde_json::from_slice(
-        &fs::read(original.join(format!("{stage}.reflection.json"))).unwrap(),
-    )
+    let mut reflection: Value = serde_json::from_slice(&compiled(
+        &original.join(format!("{stage}.reflection.json")),
+    ))
     .unwrap();
     let mut manifest: Value =
-        serde_json::from_slice(&fs::read(original.join("manifest.json")).unwrap()).unwrap();
+        serde_json::from_slice(&compiled(&original.join("manifest.json"))).unwrap();
 
     let mut resources = msl::BindingMap::default();
     for r in reflection["resources"].as_array().unwrap() {

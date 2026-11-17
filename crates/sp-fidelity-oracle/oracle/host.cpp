@@ -48,7 +48,7 @@ static FfxErrorCode createPipeline(FfxInterface*,FfxEffect effect,FfxPass pass,u
         else throw std::runtime_error("unknown reflection kind");
         dest->slotIndex=b.slot;dest->arrayIndex=b.index;wide(dest->name,b.name);
     }
-    if(!compiled)throw std::runtime_error("no compiled shader variant for pass "+std::to_string(pass)+" options "+std::to_string(flags));
+    if(!compiled)throw std::runtime_error("no compiled shader variant for pass "+std::to_string(pass)+" options "+std::to_string(flags)+" (generate it first: crates/sp-fidelity-oracle/shaders/README.md)");
     std::cout<<"[\"pipeline\","<<pass<<','<<flags<<','<<desc->indirectWorkload<<",[";
     for(uint32_t i=0;i<desc->rootConstantBufferCount;i++) { if(i)std::cout<<',';std::cout<<desc->rootConstants[i].size; }
     std::cout<<"],[";

@@ -16,7 +16,7 @@
   "compiler": "libdxcompiler.dylib: 1.9(5399-a107ba61)(1.9.0.5399)",
   "passes": {
     "fsr2_accumulate_sharpen": {
-      "source": "fidelityfx/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_accumulate_pass.hlsl",
+      "source": "sp-fidelity/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_accumulate_pass.hlsl",
       "permutationOptions": 166,
       "half": true,
       "command": [
@@ -65,11 +65,11 @@
         "0",
         "-Fo",
         "target/dxc-oracle/fsr2/options-0xa6/fsr2_accumulate_sharpen.spv",
-        "fidelityfx/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_accumulate_pass.hlsl"
+        "sp-fidelity/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_accumulate_pass.hlsl"
       ]
     },
     "fsr2_depth_clip": {
-      "source": "fidelityfx/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_depth_clip_pass.hlsl",
+      "source": "sp-fidelity/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_depth_clip_pass.hlsl",
       "permutationOptions": 166,
       "half": true,
       "command": [
@@ -118,11 +118,11 @@
         "0",
         "-Fo",
         "target/dxc-oracle/fsr2/options-0xa6/fsr2_depth_clip.spv",
-        "fidelityfx/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_depth_clip_pass.hlsl"
+        "sp-fidelity/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_depth_clip_pass.hlsl"
       ]
     },
     "fsr2_reconstruct_previous_depth": {
-      "source": "fidelityfx/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_reconstruct_previous_depth_pass.hlsl",
+      "source": "sp-fidelity/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_reconstruct_previous_depth_pass.hlsl",
       "permutationOptions": 166,
       "half": true,
       "command": [
@@ -171,11 +171,11 @@
         "0",
         "-Fo",
         "target/dxc-oracle/fsr2/options-0xa6/fsr2_reconstruct_previous_depth.spv",
-        "fidelityfx/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_reconstruct_previous_depth_pass.hlsl"
+        "sp-fidelity/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_reconstruct_previous_depth_pass.hlsl"
       ]
     },
     "fsr2_lock": {
-      "source": "fidelityfx/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_lock_pass.hlsl",
+      "source": "sp-fidelity/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_lock_pass.hlsl",
       "permutationOptions": 166,
       "half": true,
       "command": [
@@ -224,11 +224,11 @@
         "0",
         "-Fo",
         "target/dxc-oracle/fsr2/options-0xa6/fsr2_lock.spv",
-        "fidelityfx/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_lock_pass.hlsl"
+        "sp-fidelity/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_lock_pass.hlsl"
       ]
     },
     "fsr2_generate_reactive": {
-      "source": "fidelityfx/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_autogen_reactive_pass.hlsl",
+      "source": "sp-fidelity/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_autogen_reactive_pass.hlsl",
       "permutationOptions": 166,
       "half": true,
       "command": [
@@ -277,11 +277,11 @@
         "0",
         "-Fo",
         "target/dxc-oracle/fsr2/options-0xa6/fsr2_generate_reactive.spv",
-        "fidelityfx/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_autogen_reactive_pass.hlsl"
+        "sp-fidelity/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_autogen_reactive_pass.hlsl"
       ]
     },
     "fsr2_tcr_autogenerate": {
-      "source": "fidelityfx/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_tcr_autogen_pass.hlsl",
+      "source": "sp-fidelity/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_tcr_autogen_pass.hlsl",
       "permutationOptions": 166,
       "half": true,
       "command": [
@@ -330,7 +330,7 @@
         "0",
         "-Fo",
         "target/dxc-oracle/fsr2/options-0xa6/fsr2_tcr_autogenerate.spv",
-        "fidelityfx/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_tcr_autogen_pass.hlsl"
+        "sp-fidelity/vendor/sdk-1.1.4/sdk/src/backends/dx12/shaders/fsr2/ffx_fsr2_tcr_autogen_pass.hlsl"
       ]
     }
   }

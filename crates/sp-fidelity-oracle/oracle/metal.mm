@@ -260,6 +260,8 @@ class Oracle {
         __builtin_unreachable();
     }
     void loadVariants() {
+        if (!fs::is_directory(shaderDir)) fail("no compiled variants in " + shaderDir.string() +
+                                                " (generate it first: crates/sp-fidelity-oracle/shaders/README.md)");
         for (const auto& entry : fs::directory_iterator(shaderDir)) {
             if (!fs::exists(entry.path() / "manifest.json")) continue;
             NSDictionary* manifest = json(entry.path() / "manifest.json");
@@ -275,7 +277,7 @@ class Oracle {
                 variants[key] = entry.path();
             }
         }
-        if (names.empty()) fail("no compiled variants in " + shaderDir.string());
+        if (names.empty()) fail("no compiled variants in " + shaderDir.string() + " (generate it first: crates/sp-fidelity-oracle/shaders/README.md)");
     }
     void pipeline(NSArray* event) {
         const size_t stage = num(event[1]), flags = num(event[2]);
@@ -284,7 +286,8 @@ class Oracle {
         // The trace selects the permutation; only the variant compiled for it may run.
         const auto variant = variants.find({names[stage], flags});
         if (variant == variants.end())
-            fail("no compiled variant of " + names[stage] + " for permutation options " + std::to_string(flags));
+            fail("no compiled variant of " + names[stage] + " for permutation options " + std::to_string(flags) +
+                 " (generate it first: crates/sp-fidelity-oracle/shaders/README.md)");
         const fs::path directory = variant->second;
         Pipeline p;
         p.reflection = json(directory / (names[stage] + ".reflection.json"));
