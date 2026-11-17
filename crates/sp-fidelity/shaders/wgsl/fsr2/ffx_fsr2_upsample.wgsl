@@ -186,7 +186,13 @@ fn ComputeUpsampledColorAndWeight(params: AccumulationPassCommonParams,
             // Update rectification box
             {
                 let fSrcSampleOffsetSq: FfxFloat32 = dot(fSrcSampleOffset, fSrcSampleOffset);
-                let fBoxSampleWeight: FfxFloat32 = exp(fRectificationCurveBias * fSrcSampleOffsetSq);
+                // SDK-P35: an upstream bug. ClampLoad with a zero offset
+                // clamps nothing (ffx_fsr2_upsample.h:326), so a tap outside
+                // the render size loads zero, and the SDK weights it into the
+                // box regardless (line 436), darkening the history clamped to
+                // it at the frame's corners. Weighted by fOnScreenFactor as
+                // FSR3 does (ffx_fsr3upscaler_upsample.h:611).
+                let fBoxSampleWeight: FfxFloat32 = exp(fRectificationCurveBias * fSrcSampleOffsetSq) * fOnScreenFactor;
 
                 let bInitialSample: FfxBoolean = (row == 0) && (col == 0);
                 RectificationBoxAddSample_b_RectificationBox_f32x3_f32(bInitialSample, clippingBox, fSamples[iSampleIndex], fBoxSampleWeight);

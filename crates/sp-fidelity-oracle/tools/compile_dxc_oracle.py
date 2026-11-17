@@ -129,6 +129,19 @@ EFFECTS = {
 
 EFFECTS.update(FRAMEGEN_EFFECTS)
 
+# Verified upstream bugs the port fixes (CONFORMANCE.md), by ID: replacements in
+# the working copy of the SDK headers, never in vendor/. A corrected variant is
+# the reference for the corrected port; the unchanged ones reproduce the bug.
+CORRECTIONS = {
+    'fsr2': {
+        # Off-screen taps carry no rectification-box weight, as in
+        # ffx_fsr3upscaler_upsample.h:611.
+        'SDK-P35': [('fsr2/ffx_fsr2_upsample.h',
+                     'fBoxSampleWeight = exp(fRectificationCurveBias * fSrcSampleOffsetSq);',
+                     'fBoxSampleWeight = exp(fRectificationCurveBias * fSrcSampleOffsetSq) * fOnScreenFactor;')],
+    },
+}
+
 
 def run(command, log):
     result = subprocess.run(list(map(str, command)), capture_output=True, text=True)
@@ -173,9 +186,14 @@ def main():
     p.add_argument('--pass-name', action='append', help='default: every pass of the effect')
     p.add_argument('--dxc', type=Path, required=True)
     p.add_argument('--spirv-cross', type=Path, required=True)
+    p.add_argument('--correction', choices=sorted({c for cs in CORRECTIONS.values() for c in cs}),
+                   help='apply a verified upstream fix; default output: shaders/generated/<effect>-<correction>/')
     p.add_argument('--output', type=Path, help='default: shaders/generated/<effect>/options-<options>')
     a = p.parse_args()
     effect = EFFECTS[a.effect]
+    if a.correction and a.correction not in CORRECTIONS.get(a.effect, {}):
+        p.error(f'{a.correction} does not apply to {a.effect}')
+    generated = a.effect + (f'-{a.correction.lower()}' if a.correction else '')
     stages = [name for name, _ in effect['passes']]
     supported_stages = [name for name, stem in effect['passes'] if stem is not None]
     for name in a.pass_name or []:
@@ -183,9 +201,9 @@ def main():
             p.error(f'{name} is not a supported pass of {a.effect}: {supported_stages}')
     if a.options & effect['force_wave64']:
         p.error('forced wave64 is not supported: the Metal oracle cannot enforce a subgroup size')
-    out = (a.output or CRATE / 'shaders/generated' / a.effect / f'options-{a.options:#04x}').resolve()
+    out = (a.output or CRATE / 'shaders/generated' / generated / f'options-{a.options:#04x}').resolve()
     out.mkdir(parents=True, exist_ok=True)
-    work = CRATE / 'target/dxc-oracle' / a.effect / out.name
+    work = CRATE / 'target/dxc-oracle' / generated / out.name
     shutil.rmtree(work, ignore_errors=True)
     gpu = work / 'gpu'
     shutil.copytree(SDK / 'include/FidelityFX/gpu', gpu)
@@ -195,13 +213,21 @@ def main():
         lambda m: f'[[vk::image_format("{effect["formats"][m[2]]}")]] {m[0]}' if m[2] in effect['formats'] else m[0],
         path.read_text())
     path.write_text(code)
+    for header, original, corrected in CORRECTIONS.get(a.effect, {}).get(a.correction, []):
+        path = gpu / header
+        code = path.read_text()
+        if code.count(original) != 1:
+            raise SystemExit(f'{a.correction}: {header} no longer has exactly one {original!r}')
+        path.write_text(code.replace(original, corrected))
     version = subprocess.run([str(a.dxc.resolve()), '--version'], capture_output=True, text=True, check=True)
     manifest_path = out / 'manifest.json'
     manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else dict(
         sdkRevision=REVISION, effect=a.effect, stages=stages, forceWave64Flag=effect['force_wave64'],
-        compiler=version.stdout.strip(), passes={})
+        compiler=version.stdout.strip(), passes={}, **({'corrections': [a.correction]} if a.correction else {}))
     if manifest['effect'] != a.effect or manifest['stages'] != stages:
         raise SystemExit(f'{manifest_path} belongs to another effect')
+    if manifest.get('corrections', []) != ([a.correction] if a.correction else []):
+        raise SystemExit(f'{manifest_path} has other corrections')
     defines = [f'-D{define}={int(bool(a.options & bit))}' for bit, define in effect['options']]
     includes = [arg for directory in effect['includes'] for arg in ('-I', gpu / directory)]
     for name in a.pass_name or supported_stages:

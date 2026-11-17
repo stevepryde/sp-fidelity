@@ -54,7 +54,7 @@ Counts are output dumps.
 | Pass | Permutations | Result |
 | --- | --- | --- |
 | RCAS | all 64 option combinations (FP32; the SDK accessor never selects FP16 for RCAS); 1×1, 16×16, 37×23, 130×67 and 1920×1080; sharpness 0–1, exposure and pre-exposure 0→1, flat and black inputs | bit-exact (1,285 RGBA16F outputs; also bit-exact with an RGBA32F diagnostic output) |
-| Accumulate and accumulate + sharpen | all 64 option combinations × FP32 and FP16; upscale 1.0–3.0 with odd sizes, partial tiles and a maximum render size above the render size, plus 1920×1080-class low-resolution motion; application, default and auto exposure; resets | strict (both compiled without fast math or contraction, DXC's six constant folds applied to the WGSL): bit-exact, 11,570 dumps. With wgpu's fast math on both sides (SDK-P22), 4,335 differ with identical inputs and 4,410 when each side carries its own history; recorded, not bounded |
+| Accumulate and accumulate + sharpen | all 64 option combinations × FP32 and FP16; upscale 1.0–3.0 with odd sizes, partial tiles and a maximum render size above the render size, plus 1920×1080-class low-resolution motion; application, default and auto exposure; resets | against the HLSL with SDK-P35 corrected; strict (both compiled without fast math or contraction, DXC's six constant folds applied to the WGSL): bit-exact, 11,570 dumps. With wgpu's fast math on both sides (SDK-P22), 4,331 differ with identical inputs and 4,411 when each side carries its own history; recorded, not bounded |
 | Reconstruct and dilate | every permutation | bit-exact, 9,240 dumps |
 | Lock | every permutation | bit-exact, 4,620 dumps |
 | Generate reactive | every permutation | bit-exact, 12,320 dumps |
@@ -316,6 +316,7 @@ Adaptation IDs are stable and may have gaps.
 | SDK-P26 | Naga's Metal output keeps every WGSL loop as a bounded `while (true)` the Metal compiler does not unroll, and branches on `\|\|` | The pass preprocessor performs `FFX_UNROLL` wherever the SDK has it and on five more constant loops; `ffxWgslOutside` uses `\|`. Operations and their order are unchanged. See below. |
 | SDK-P27 | wgpu rejects a view of a mip the texture lacks | FSR2 binds the luminance pyramid's `rw_img_mip_shading_change` and `rw_img_mip_5` to mips 4 and 5 of `FSR2_ExposureMips` whatever its size (`ffx_fsr2.cpp:669–678, 998–1004`); below a 64-pixel maximum render size the texture lacks mip 5, and below 32 mip 4 too. The backend binds the texture's last mip, as AMD's Vulkan backend does (`sdk/src/backends/vk/ffx_vk.cpp:3769–3771` at the SDK revision; the DX12 backend, `sdk/src/backends/dx12/ffx_dx12.cpp:3052` at the SDK revision, indexes past the resource's own descriptors). SPD stores to mip 4 or 5 only when its mip count, from the render size, reaches it (`ffx_fsr2_compute_luminance_pyramid.h:70–72`, `ffx_spd.h:68`), so nothing is written through a substituted view (render size within the maximum), and sizes that have the mips bind them unchanged. |
 | SDK-P28 | wgpu reports an object it rejects when it is created, but the error of recording it only when the encoder finishes, and then the whole encoder, with the application's own work in it, is invalid | A clear or compute job creates its new views and bind group inside validation and out-of-memory error scopes and, if wgpu rejects any, fails before recording them with `FFX_ERROR_BACKEND_API_ERROR`, the code AMD's DX12 backend returns for a failed job (`sdk/src/backends/dx12/ffx_dx12.cpp:3501–3504` at the SDK revision), and wgpu's message. `fpExecuteGpuJobs` stops at the first failed job and executes none after it, which the valid encoder depends on; AMD's DX12 `ExecuteGpuJobsDX12` instead records every job and keeps overwriting its error code (`ffx_dx12.cpp:3461–3499`). Godot's FSR2 backend stops at the first failed job (`execute_gpu_jobs_rd`, `servers/rendering/renderer_rd/effects/fsr2.cpp:479–482` at Godot b130438), fails a job whose UAV view it could not create before recording it (`execute_gpu_job_compute_rd`, `fsr2.cpp:424`), and its RenderingDevice refuses to bind an invalid uniform set (`servers/rendering/rendering_device.cpp:6884–6885`). `ffxFsr2ContextDispatch` ignores `fpExecuteGpuJobs`'s result (`ffx_fsr2.cpp:1321`), as the port does, so the backend keeps the first failure's code and message for `take_job_error`. A failed job records nothing invalid: what it records before its check, a compute job's SDK-P23 conversion copy, is valid (a job observer's commands are the observer's own). Only new objects are checked: a bind group a pipeline kept was checked when it was made, so a texture destroyed after that is recorded and fails at `queue.submit`; and invalid inputs can still invalidate the encoder while a job records, for example one texture passed as both an input and the output (a usage conflict). On WebGPU the scopes resolve only after the call, so there the error stays deferred to `finish`. |
+| SDK-P35 | FSR2 accumulate weights taps outside the render size into its rectification box | A verified upstream bug, corrected in the port's WGSL; see below. |
 
 ### SDK-P33 — padded frame-interpolation game-field invocations
 
@@ -480,6 +481,46 @@ When updating upstream: retain its vendor tree verbatim, rerun original-path
 host/shader comparisons, then run the independent correction regressions. If
 AMD supplies equivalent outgoing coverage, compare it on these inputs and remove
 this correction when it supersedes it; do not fold this patch into the reference.
+
+### SDK-P35 — FSR2 accumulate border taps in the rectification box
+
+A verified bug in AMD's FSR2 HLSL, corrected in the port. `ComputeUpsampledColorAndWeight`
+loads its 3×3 taps with `ClampLoad(iSrcSamplePos, FfxInt32x2(0, 0), RenderSize())`
+(`ffx_fsr2_upsample.h:326`), and `ClampLoad` clamps only in the direction of a
+non-zero offset (`ffx_fsr2_common.h:358–365`), so it clamps nothing: a tap
+outside the render size loads zero (HLSL's out-of-range `Load`), or a stale
+texel beyond the render size when the maximum render size is larger. The
+Lanczos weight excludes such taps (`fOnScreenFactor`, line 428), but the
+rectification box takes them at full weight
+(`fBoxSampleWeight = exp(fRectificationCurveBias * fSrcSampleOffsetSq)`, line 436).
+A corner texel has five such taps; where the jitter puts them close to the
+sample they pull the variance box below the history, which is clamped into it.
+A uniform frame at rest then darkens a corner on some jitter phases: at native
+resolution the bottom-left texel on phase 7 and the top-right on phase 2, by
+up to 14 % at a 0.25 grey, decaying over the following frames.
+
+FSR3 corrects exactly this: `ffx_fsr3upscaler_upsample.h:611` multiplies the
+box weight by `fOnScreenFactor`, so its off-screen taps reach neither sum. The
+Xbox-only paired path of the same FSR2 file loads clamped coordinates
+(lines 297–311). The port applies FSR3's weighting
+(`shaders/wgsl/fsr2/ffx_fsr2_upsample.wgsl`). Both versions still widen the box's
+`aabbMin`/`aabbMax` with every tap (`RectificationBoxAddSample`); that bound only
+loosens the variance box and is retained unchanged.
+
+Evidence. `sp-fidelity-wgpu`'s
+`fsr2_upscales_a_uniform_frame_to_the_same_value_at_every_texel` runs FSR2
+through the backend at 37×23 and 64×64 native and 37×23 at Quality, over every
+jitter phase: a grey frame must come out grey at every texel within two
+binary16 stores. Without the correction it fails at 37×23 on phase 2, texel
+(36, 0), 0.2457. In the oracle, `fsr2_passes::accumulate_keeps_a_uniform_frame_uniform`
+runs the accumulate pass on jitter phases 7–11 with the uniform history the
+pass itself would keep (HDR FP32 and FP16, LDR; native 37×23 and 67×45 from
+45×30 with stale texels beyond it): the unchanged HLSL darkens texel (0, 22) of
+37×23 to 0.2146 in every permutation, while the port and the corrected HLSL
+stay uniform and match exactly. The compile tool builds the corrected
+reference with `--correction SDK-P35` (a replacement in its working copy of
+the SDK headers; `vendor/` is unchanged), into `shaders/generated/fsr2-sdk-p35`;
+the accumulate comparison above is against it.
 
 ### SDK-P14 — SPD hand-off between workgroups
 

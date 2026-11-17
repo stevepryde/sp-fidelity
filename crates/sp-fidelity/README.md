@@ -50,6 +50,9 @@ events, and 64,005 bit-exact GPU output comparisons**.
 [CONFORMANCE.md](https://github.com/stevepryde/sp-fidelity/blob/main/crates/sp-fidelity/CONFORMANCE.md)
 records the full results, adaptations and known differences. GPU results
 are from Apple Metal; DX12/Vulkan conformance is not yet established.
+FSR2's accumulate pass corrects a verified SDK bug that darkened frame corners
+([SDK-P35](CONFORMANCE.md#sdk-p35--fsr2-accumulate-border-taps-in-the-rectification-box));
+it is compared with the original HLSL with that correction applied.
 
 Frame-generation diagnostics, limitations, and the documented Rust/WGSL
 corrections remain in [CONFORMANCE.md](CONFORMANCE.md#sdk-p34--outgoing-stationary-geometry).

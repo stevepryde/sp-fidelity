@@ -180,7 +180,10 @@ the original through the same Metal compiler without fast math.
 `tests/fsr2_passes.rs` covers FSR2's RCAS (`oracle/fsr2_rcas_constants.cpp`
 computes its `cbRCAS` with AMD's host code) and the accumulate passes, whose
 jobs, `cbFSR2` and Lanczos LUT data come from AMD's C++ host
-(`oracle/fsr2_host.cpp`), in every permutation.
+(`oracle/fsr2_host.cpp`), in every permutation. Accumulate is compared with
+the HLSL with SDK-P35 corrected (`shaders/generated/fsr2-sdk-p35`);
+`accumulate_keeps_a_uniform_frame_uniform` also runs the unchanged HLSL,
+which reproduces that upstream bug.
 
 ## FSR3.1 comparisons
 
