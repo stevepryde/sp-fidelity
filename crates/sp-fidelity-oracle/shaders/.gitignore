@@ -50,3 +50,11 @@
 !/generated/fsr3upscaler/options-0x8c/
 !/generated/fsr3upscaler/options-0xac/
 !/generated/fsr3upscaler/options-0x3a/
+# The composite FSR3 host test's HDR (0x87) and HDR with jitter
+# cancellation (0x8f) contexts, with their RCAS and sharpening variants.
+!/generated/fsr3upscaler/options-0x07/
+!/generated/fsr3upscaler/options-0x0f/
+!/generated/fsr3upscaler/options-0x87/
+!/generated/fsr3upscaler/options-0x8f/
+!/generated/fsr3upscaler/options-0xa7/
+!/generated/fsr3upscaler/options-0xaf/
