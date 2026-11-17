@@ -408,9 +408,13 @@ fn cpp_host() -> &'static (PathBuf, PathBuf) {
         let directory = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("fsr2-passes-host");
         let (executable, bindings) = build_cpp_host(&directory.join("build"), &FSR2);
         let text = fs::read_to_string(&bindings).unwrap();
+        // `effect stage options binding` (`host.rs`); FSR2's effect is the
+        // composite field's none.
         let mut tables: BTreeMap<(u32, u32), Vec<String>> = BTreeMap::new();
+        let mut effect = "";
         for line in text.lines() {
-            let mut words = line.splitn(3, ' ');
+            let mut words = line.splitn(4, ' ');
+            effect = words.next().unwrap();
             let stage = words.next().unwrap().parse().unwrap();
             let options = words.next().unwrap().parse().unwrap();
             tables
@@ -428,7 +432,7 @@ fn cpp_host() -> &'static (PathBuf, PathBuf) {
             for options in 0..256 {
                 if !tables.contains_key(&(stage, options)) {
                     for line in &template {
-                        let _ = writeln!(extended, "{stage} {options} {line}");
+                        let _ = writeln!(extended, "{effect} {stage} {options} {line}");
                     }
                 }
             }
