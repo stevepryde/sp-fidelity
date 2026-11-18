@@ -56,9 +56,10 @@ mod outgoing_tests;
 #[cfg(feature = "frame-generation")]
 pub mod presentation;
 pub mod readback;
+mod reflections;
 
-/// The wgpu features every SDK pass needs; request them when creating the
-/// device. [`optional_features`] adds the FP16 permutations.
+/// The wgpu features needed for FSR upscaling and frame generation. The
+/// reflections denoiser runs with core WebGPU features. [`optional_features`] adds the FP16 permutations.
 ///
 /// Derived from the FSR2 WGSL (`fsr2/ffx_fsr2_callbacks.wgsl`) and the
 /// resources `ffx_fsr2.cpp` creates:
@@ -197,6 +198,7 @@ struct Resource {
 }
 
 struct Pipeline {
+    effect_context_id: u32,
     effect: FfxEffect,
     pass: FfxPass,
     pipeline: wgpu::ComputePipeline,
@@ -245,6 +247,9 @@ struct StagedConstants {
 }
 
 struct EffectContext {
+    // Only this context may execute or abandon its dispatch when dynamic
+    // registrations are retired and their internal indices become reusable.
+    jobs: Vec<FfxGpuJobDescription>,
     effect: FfxEffect,
     dynamic: Vec<usize>,
 }
@@ -254,6 +259,7 @@ struct EffectContext {
 pub struct FfxWgpuBackend {
     device: wgpu::Device,
     fp16: bool,
+    reflections: reflections::Formats,
     /// By `FfxResourceInternal::internalIndex`; index 0 is the null resource.
     resources: Vec<Option<Resource>>,
     free_dynamic: Vec<usize>,
@@ -263,7 +269,9 @@ pub struct FfxWgpuBackend {
     contexts: Vec<Option<EffectContext>>,
     /// By `FfxPipelineState::pipeline - 1`.
     pipelines: Vec<Option<Pipeline>>,
-    jobs: Vec<FfxGpuJobDescription>,
+    // Uploads created before dispatch may belong to a shared resource context
+    // that never dispatches jobs of its own. Drain them before the next effect.
+    initializations: Vec<(u32, FfxGpuJobDescription)>,
     /// By `FfxCommandList - 1`.
     command_lists: Vec<Option<wgpu::CommandEncoder>>,
     grid: dispatch_grid::DispatchGrid,
@@ -397,11 +405,23 @@ pub fn ffx_get_interface_wgpu(
     (backend, interface)
 }
 
+/// As [`ffx_get_interface_wgpu`], with adapter format capabilities for the
+/// reflections denoiser. Pass the adapter that created `device`.
+pub fn ffx_get_interface_wgpu_with_adapter(
+    device: &wgpu::Device,
+    adapter: &wgpu::Adapter,
+) -> (Rc<RefCell<FfxWgpuBackend>>, FfxInterfaceRef) {
+    let (backend, interface) = ffx_get_interface_wgpu(device);
+    backend.borrow_mut().reflections = reflections::Formats::for_adapter(device, adapter);
+    (backend, interface)
+}
+
 impl FfxWgpuBackend {
-    /// A backend for `device`, which must have [`required_features`].
+    /// A backend for `device` using portable reflections storage formats.
     pub fn new(device: &wgpu::Device) -> Self {
         Self {
             device: device.clone(),
+            reflections: reflections::Formats::default(),
             fp16: device.features().contains(wgpu::Features::SHADER_F16),
             resources: vec![None],
             free_dynamic: Vec::new(),
@@ -410,7 +430,7 @@ impl FfxWgpuBackend {
             external_handles: Vec::new(),
             contexts: Vec::new(),
             pipelines: Vec::new(),
-            jobs: Vec::new(),
+            initializations: Vec::new(),
             command_lists: Vec::new(),
             grid: dispatch_grid::DispatchGrid::new(device),
             clears: HashMap::new(),
@@ -424,6 +444,11 @@ impl FfxWgpuBackend {
             #[cfg(feature = "frame-generation")]
             frame_generation_configurator: None,
         }
+    }
+
+    /// Physical format for both caller-owned variance ping-pong textures.
+    pub fn reflections_variance_format(&self) -> wgpu::TextureFormat {
+        self.reflections.scalar
     }
 
     /// Report `fp16Supported` as `enabled` (and the device has `SHADER_F16`),
@@ -451,13 +476,15 @@ impl FfxWgpuBackend {
         &mut self,
         command_list: FfxCommandList,
     ) -> Option<wgpu::CommandEncoder> {
+        let encoder = self
+            .command_lists
+            .get_mut(command_list.checked_sub(1)?)?
+            .take()?;
         for handle in self.external_handles.drain(..) {
             self.handles.remove(&handle);
         }
         self.prune_texture_buffers();
-        self.command_lists
-            .get_mut(command_list.checked_sub(1)?)
-            .and_then(Option::take)
+        Some(encoder)
     }
 
     fn prune_texture_buffers(&mut self) {
@@ -480,8 +507,46 @@ impl FfxWgpuBackend {
         state: FfxResourceStates,
     ) -> FfxResource {
         let description = ffx_get_resource_description_wgpu(texture);
+        self.external_resource(Object::Texture(texture.clone()), description, name, state)
+    }
+
+    /// Register a caller's buffer for this command list, with the same handle
+    /// lifetime as [`Self::ffx_get_resource_wgpu`]. The SDK describes buffer
+    /// sizes in 32-bit bytes. Give a structured buffer its element stride.
+    pub fn ffx_get_buffer_resource_wgpu(
+        &mut self,
+        buffer: &wgpu::Buffer,
+        stride: u32,
+        name: &str,
+        state: FfxResourceStates,
+    ) -> Result<FfxResource, FfxErrorCode> {
+        let mut usage = FFX_RESOURCE_USAGE_READ_ONLY;
+        if buffer.usage().contains(wgpu::BufferUsages::STORAGE) {
+            usage |= FFX_RESOURCE_USAGE_UAV;
+        }
+        if buffer.usage().contains(wgpu::BufferUsages::INDIRECT) {
+            usage |= FFX_RESOURCE_USAGE_INDIRECT;
+        }
+        let description = FfxResourceDescription {
+            r#type: FfxResourceType::Buffer,
+            format: FfxSurfaceFormat::Unknown,
+            width: u32::try_from(buffer.size()).map_err(|_| FFX_ERROR_OUT_OF_RANGE)?,
+            height: stride,
+            usage,
+            ..Default::default()
+        };
+        Ok(self.external_resource(Object::Buffer(buffer.clone()), description, name, state))
+    }
+
+    fn external_resource(
+        &mut self,
+        object: Object,
+        description: FfxResourceDescription,
+        name: &str,
+        state: FfxResourceStates,
+    ) -> FfxResource {
         let handle = self.insert_handle(Handle {
-            object: Object::Texture(texture.clone()),
+            object,
             description,
             name: name.to_owned(),
         });
@@ -708,7 +773,7 @@ impl FfxWgpuBackend {
         scopes.check()?;
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("FFX_GPU_JOB_CLEAR_FLOAT"),
-            timestamp_writes: self.timestamp_writes(),
+            timestamp_writes: None,
         });
         pass.set_pipeline(&pipeline);
         pass.set_bind_group(0, &group, &[]);
@@ -1236,6 +1301,7 @@ impl FfxWgpuBackend {
             });
         scopes.check()?;
         let variant = Pipeline {
+            effect_context_id: original.effect_context_id,
             effect: original.effect,
             pass: original.pass,
             pipeline,
@@ -1695,12 +1761,14 @@ impl FfxInterface for FfxWgpuBackend {
     ) -> Result<u32, FfxErrorCode> {
         let index = if let Some(index) = self.contexts.iter().position(Option::is_none) {
             self.contexts[index] = Some(EffectContext {
+                jobs: Vec::new(),
                 effect,
                 dynamic: Vec::new(),
             });
             index
         } else {
             self.contexts.push(Some(EffectContext {
+                jobs: Vec::new(),
                 effect,
                 dynamic: Vec::new(),
             }));
@@ -1728,6 +1796,8 @@ impl FfxInterface for FfxWgpuBackend {
             .get_mut(effect_context_id as usize)
             .and_then(Option::take)
             .ok_or(FFX_ERROR_INVALID_ARGUMENT)?;
+        self.initializations
+            .retain(|(owner, _)| *owner != effect_context_id);
         for index in context.dynamic {
             self.resources[index] = None;
             self.free_dynamic.push(index);
@@ -1772,7 +1842,11 @@ impl FfxInterface for FfxWgpuBackend {
         let (object, bytes) = create_object(
             &self.device,
             &allocation,
-            widen_spd.then_some(wgpu::TextureFormat::Rgba16Float),
+            if effect == Some(FfxEffect::Denoiser) {
+                self.reflections.storage_override(&description)
+            } else {
+                widen_spd.then_some(wgpu::TextureFormat::Rgba16Float)
+            },
         )?;
         let handle = Handle {
             object,
@@ -1859,16 +1933,19 @@ impl FfxInterface for FfxWgpuBackend {
             upload_row_pitch: row_pitch,
             bytes: contents.len() as u64,
         });
-        self.schedule_gpu_job(&FfxGpuJobDescription {
-            job_label: "Resource initialization".into(),
-            descriptor: FfxGpuJobDescriptor::Copy(FfxCopyJobDescription {
-                src,
-                src_offset: 0,
-                dst: resource,
-                dst_offset: 0,
-                size: 0,
-            }),
-        })?;
+        self.initializations.push((
+            effect_context_id,
+            FfxGpuJobDescription {
+                job_label: "Resource initialization".into(),
+                descriptor: FfxGpuJobDescriptor::Copy(FfxCopyJobDescription {
+                    src,
+                    src_offset: 0,
+                    dst: resource,
+                    dst_offset: 0,
+                    size: 0,
+                }),
+            },
+        ));
         Ok(resource)
     }
 
@@ -1941,6 +2018,7 @@ impl FfxInterface for FfxWgpuBackend {
             .get_mut(effect_context_id as usize)
             .and_then(Option::as_mut)
             .ok_or(FFX_ERROR_INVALID_ARGUMENT)?;
+        context.jobs.clear();
         for index in context.dynamic.drain(..) {
             self.resources[index] = None;
             self.free_dynamic.push(index);
@@ -1991,7 +2069,7 @@ impl FfxInterface for FfxWgpuBackend {
         pass: FfxPass,
         permutation_options: u32,
         pipeline_description: &FfxPipelineDescription<'_>,
-        _effect_context_id: u32,
+        effect_context_id: u32,
     ) -> Result<FfxPipelineState, FfxErrorCode> {
         let blob = self.get_permutation_blob_by_index(
             effect,
@@ -2003,7 +2081,12 @@ impl FfxInterface for FfxWgpuBackend {
             // SDK-P6: not selected, because the backend reports SM6.2.
             return Err(FFX_ERROR_BACKEND_API_ERROR);
         }
-        let source = ffx_get_wgsl_source(&blob).ok_or(FFX_ERROR_BACKEND_API_ERROR)?;
+        let source = if effect == FfxEffect::Denoiser {
+            self.reflections.shader(&blob, self.device.features())
+        } else {
+            ffx_get_wgsl_source(&blob)
+        }
+        .ok_or(FFX_ERROR_BACKEND_API_ERROR)?;
         let source = if effect == FfxEffect::Fsr3Upscaler {
             source.replace(
                 "texture_storage_2d<rg16float, read_write>",
@@ -2160,6 +2243,7 @@ impl FfxInterface for FfxWgpuBackend {
             })
             .collect::<Result<Vec<_>, FfxErrorCode>>()?;
         let record = Pipeline {
+            effect_context_id,
             effect,
             pass,
             pipeline,
@@ -2250,22 +2334,56 @@ impl FfxInterface for FfxWgpuBackend {
     }
 
     fn schedule_gpu_job(&mut self, job: &FfxGpuJobDescription) -> Result<(), FfxErrorCode> {
-        self.jobs.push(job.clone());
+        let owner = match &job.descriptor {
+            FfxGpuJobDescriptor::Compute(compute) => {
+                self.pipeline(&compute.pipeline)?.effect_context_id
+            }
+            FfxGpuJobDescriptor::ClearFloat(clear) => {
+                self.resource(clear.target)?.effect_context_id
+            }
+            FfxGpuJobDescriptor::Copy(copy) => self.resource(copy.dst)?.effect_context_id,
+            FfxGpuJobDescriptor::Barrier(barrier) => {
+                self.resource(barrier.resource)?.effect_context_id
+            }
+            FfxGpuJobDescriptor::Discard(discard) => {
+                self.resource(discard.target)?.effect_context_id
+            }
+        };
+        let context = self
+            .contexts
+            .get_mut(owner as usize)
+            .and_then(Option::as_mut)
+            .ok_or(FFX_ERROR_INVALID_ARGUMENT)?;
+        context.jobs.push(job.clone());
         Ok(())
     }
 
     fn execute_gpu_jobs(
         &mut self,
         command_list: FfxCommandList,
-        _effect_context_id: u32,
+        effect_context_id: u32,
     ) -> Result<(), FfxErrorCode> {
+        let context = self
+            .contexts
+            .get_mut(effect_context_id as usize)
+            .and_then(Option::as_mut)
+            .ok_or(FFX_ERROR_INVALID_ARGUMENT)?;
+        let frame_jobs = std::mem::take(&mut context.jobs);
         let slot = command_list
             .checked_sub(1)
             .filter(|index| self.command_lists.get(*index).is_some_and(Option::is_some))
             .ok_or(FFX_ERROR_INVALID_ARGUMENT)?;
         let mut encoder = self.command_lists[slot].take().unwrap();
         let mut observer = self.observer.take();
-        let jobs = std::mem::take(&mut self.jobs);
+        let jobs = if self.initializations.is_empty() {
+            frame_jobs
+        } else {
+            self.initializations
+                .drain(..)
+                .map(|(_, job)| job)
+                .chain(frame_jobs)
+                .collect()
+        };
         let (upload, constants) = self.stage_constants(&jobs);
         // The first failing job stops the rest (SDK-P28), so the encoder
         // holds nothing it could not record.
@@ -2732,6 +2850,10 @@ mod tests {
     /// A device with the required features, or `None` after printing why.
     /// `SP_FIDELITY_REQUIRE_GPU` turns the skip into a failure.
     pub(crate) fn device() -> Option<(wgpu::Device, wgpu::Queue)> {
+        device_with_adapter().map(|(_, device, queue)| (device, queue))
+    }
+
+    pub(super) fn device_with_adapter() -> Option<(wgpu::Adapter, wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
         let result = pollster::block_on(instance.request_adapter(&Default::default()))
             .map_err(|e| e.to_string())
@@ -2741,6 +2863,7 @@ mod tests {
                     required_limits: adapter.limits(),
                     ..Default::default()
                 }))
+                .map(|(device, queue)| (adapter, device, queue))
                 .map_err(|e| e.to_string())
             });
         match result {
@@ -2755,6 +2878,111 @@ mod tests {
                 eprintln!("skipping GPU test: {error}");
                 None
             }
+        }
+    }
+
+    #[test]
+    fn failed_dispatch_cannot_clear_a_recycled_registration_or_consume_another_effects_job() {
+        let Some((device, queue)) = device() else {
+            return;
+        };
+        let (backend, _) = ffx_get_interface_wgpu(&device);
+        let mut backend = backend.borrow_mut();
+        let failed = backend
+            .create_backend_context(FfxEffect::Denoiser, None)
+            .unwrap();
+        let other = backend
+            .create_backend_context(FfxEffect::Fsr2, None)
+            .unwrap();
+        let buffer = || {
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: None,
+                contents: &[19, 23, 29, 31],
+                usage: wgpu::BufferUsages::COPY_DST
+                    | wgpu::BufferUsages::COPY_SRC
+                    | wgpu::BufferUsages::STORAGE,
+            })
+        };
+        let clear_job = |target| FfxGpuJobDescription {
+            job_label: "clear".into(),
+            descriptor: FfxGpuJobDescriptor::ClearFloat(FfxClearFloatJobDescription {
+                target,
+                color: [0.0; 4],
+            }),
+        };
+        for invalid_list in [false, true] {
+            let list = backend
+                .ffx_get_command_list_wgpu(device.create_command_encoder(&Default::default()));
+            let good_target = buffer();
+            let good_handle = backend
+                .ffx_get_buffer_resource_wgpu(
+                    &good_target,
+                    4,
+                    "other effect",
+                    FFX_RESOURCE_STATE_UNORDERED_ACCESS,
+                )
+                .unwrap();
+            let good = backend.register_resource(&good_handle, other).unwrap();
+            backend.schedule_gpu_job(&clear_job(good)).unwrap();
+
+            let failed_target = buffer();
+            let handle = backend
+                .ffx_get_buffer_resource_wgpu(
+                    &failed_target,
+                    4,
+                    "failed dispatch",
+                    FFX_RESOURCE_STATE_UNORDERED_ACCESS,
+                )
+                .unwrap();
+            let resource = backend.register_resource(&handle, failed).unwrap();
+            backend.schedule_gpu_job(&clear_job(resource)).unwrap();
+            if invalid_list {
+                assert!(backend.execute_gpu_jobs(0, failed).is_err());
+            } else {
+                // A later registration fails after the SDK has queued its first-frame clears.
+                let expired = FfxResource {
+                    resource: usize::MAX,
+                    ..Default::default()
+                };
+                assert!(backend.register_resource(&expired, failed).is_err());
+            }
+            backend.unregister_resources(list, failed).unwrap();
+
+            let protected = buffer();
+            let handle = backend
+                .ffx_get_buffer_resource_wgpu(
+                    &protected,
+                    4,
+                    "subsequent registration",
+                    FFX_RESOURCE_STATE_UNORDERED_ACCESS,
+                )
+                .unwrap();
+            backend.register_resource(&handle, other).unwrap();
+            backend.execute_gpu_jobs(list, other).unwrap();
+            backend.unregister_resources(list, other).unwrap();
+
+            // A valid retry still executes its own work.
+            let retry = backend
+                .ffx_get_buffer_resource_wgpu(
+                    &failed_target,
+                    4,
+                    "retry",
+                    FFX_RESOURCE_STATE_UNORDERED_ACCESS,
+                )
+                .unwrap();
+            let resource = backend.register_resource(&retry, failed).unwrap();
+            backend.schedule_gpu_job(&clear_job(resource)).unwrap();
+            backend.execute_gpu_jobs(list, failed).unwrap();
+            backend.unregister_resources(list, failed).unwrap();
+
+            let mut encoder = backend.ffx_take_command_list_wgpu(list).unwrap();
+            let readbacks = [&protected, &good_target, &failed_target]
+                .map(|buffer| readback::Readback::buffer(&device, &mut encoder, buffer));
+            queue.submit([encoder.finish()]);
+            let bytes = readback::Readback::read_all(&device, readbacks.into());
+            assert_eq!(bytes[0], [19, 23, 29, 31]);
+            assert_eq!(bytes[1], [0; 4]);
+            assert_eq!(bytes[2], [0; 4]);
         }
     }
 

@@ -1,0 +1,120 @@
+{
+  "metalEntryPoint": "main0",
+  "workgroupSize": [
+    8,
+    8,
+    1
+  ],
+  "resources": [
+    {
+      "name": "r_radiance",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 7,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_variance",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 9,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_sample_count",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 10,
+      "arrayIndex": 0,
+      "mslIndex": 2,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_average_radiance",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 11,
+      "arrayIndex": 0,
+      "mslIndex": 3,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_extracted_roughness",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 12,
+      "arrayIndex": 0,
+      "mslIndex": 4,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_reprojected_radiance",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 16,
+      "arrayIndex": 0,
+      "mslIndex": 5,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "s_LinearSampler",
+      "kind": "sampler",
+      "registerClass": "s",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "sampler",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_radiance",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 6,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_variance",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 7,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_denoiser_tile_list",
+      "kind": "buffer",
+      "registerClass": "u",
+      "register": 5,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "buffer",
+      "byteSize": 0
+    },
+    {
+      "name": "cbDenoiserReflections",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "buffer",
+      "byteSize": 236
+    }
+  ]
+}

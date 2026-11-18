@@ -24,6 +24,23 @@ REVISION = 'c6efa6bf7f2027b3ec94f28578bb5965eabb9e55'
 SHIFTS = {'t': 0, 'u': 64, 'b': 128, 's': 192}
 
 EFFECTS = {
+    'denoiser': dict(
+        # FfxDenoiserPass indexes the shared shadow and reflection pass table.
+        passes=[('denoiser_prepare_shadow_mask', None),
+                ('denoiser_shadows_tile_classification', None),
+                ('denoiser_filter_soft_shadows_0', None),
+                ('denoiser_filter_soft_shadows_1', None),
+                ('denoiser_filter_soft_shadows_2', None),
+                ('denoiser_reproject_reflections', 'reproject_reflections'),
+                ('denoiser_prefilter_reflections', 'prefilter_reflections'),
+                ('denoiser_resolve_temporal_reflections', 'resolve_temporal_reflections')],
+        callbacks='denoiser/ffx_denoiser_reflections_callbacks_hlsl.h',
+        msl='30100', includes=['.', 'denoiser'], args=[],
+        options=[(1 << 2, 'FFX_DENOISER_OPTION_INVERTED_DEPTH')],
+        force_wave64=1 << 0, allow_fp16=1 << 1,
+        formats={'rw_radiance': 'rgba16f', 'rw_variance': 'r16f',
+                 'rw_sample_count': 'r16f', 'rw_average_radiance': 'r11g11b10f',
+                 'rw_reprojected_radiance': 'rgba16f'}),
     'fsr2': dict(
         # FfxFsr2Pass order (ffx_fsr2.h): oracle pass name, pass HLSL stem.
         passes=[('fsr2_depth_clip', 'depth_clip'),

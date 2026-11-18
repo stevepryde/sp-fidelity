@@ -31,6 +31,20 @@ pub struct Gpu {
 
 impl Gpu {
     pub fn new(fp16: bool, max_workgroups_per_dimension: Option<u32>) -> Self {
+        let features = sp_fidelity_wgpu::required_features()
+            | if fp16 {
+                wgpu::Features::SHADER_F16
+            } else {
+                wgpu::Features::empty()
+            };
+        Self::with_features(features, max_workgroups_per_dimension)
+    }
+
+    /// Request exactly the feature set available to the caller under test.
+    pub fn with_features(
+        features: wgpu::Features,
+        max_workgroups_per_dimension: Option<u32>,
+    ) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::METAL,
             ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -42,12 +56,7 @@ impl Gpu {
             limits.max_compute_workgroups_per_dimension = limit;
         }
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: sp_fidelity_wgpu::required_features()
-                | if fp16 {
-                    wgpu::Features::SHADER_F16
-                } else {
-                    wgpu::Features::empty()
-                },
+            required_features: features,
             required_limits: limits,
             ..Default::default()
         }))
@@ -98,6 +107,16 @@ pub fn upload(queue: &wgpu::Queue, texture: &wgpu::Texture, data: &[u8]) {
 /// Write `inputs/inputs.json` and the input files the Metal oracle loads:
 /// every application input, and per frame the inputs that change then.
 pub fn write_inputs(directory: &Path, inputs: &[Input], updates: &[Vec<(&str, Vec<u8>)>]) {
+    write_inputs_with_buffers(directory, inputs, &[], updates);
+}
+
+/// Include caller-owned structured buffers and indirect arguments in the Metal replay.
+pub fn write_inputs_with_buffers(
+    directory: &Path,
+    inputs: &[Input],
+    buffers: &[(&str, &[u8])],
+    updates: &[Vec<(&str, Vec<u8>)>],
+) {
     let input_directory = directory.join("inputs");
     fs::create_dir_all(&input_directory).unwrap();
     let textures: Vec<_> = inputs
@@ -108,7 +127,16 @@ pub fn write_inputs(directory: &Path, inputs: &[Input], updates: &[Vec<(&str, Ve
             let t = &input.texture;
             json!({"name": input.name, "format": input.format as u32, "width": t.width(),
                    "height": t.height(), "layers": t.depth_or_array_layers(),
-                   "mipCount": t.mip_level_count(), "cube": input.cube, "file": file})
+                   "mipCount": t.mip_level_count(), "cube": input.cube, "file": file,
+                   "writable": t.usage().contains(wgpu::TextureUsages::STORAGE_BINDING)})
+        })
+        .collect();
+    let buffers: Vec<_> = buffers
+        .iter()
+        .map(|(name, bytes)| {
+            let file = format!("{name}.bin");
+            fs::write(input_directory.join(&file), bytes).unwrap();
+            json!({"name": name, "byteSize": bytes.len(), "file": file})
         })
         .collect();
     let frames: Vec<Vec<_>> = updates
@@ -128,7 +156,10 @@ pub fn write_inputs(directory: &Path, inputs: &[Input], updates: &[Vec<(&str, Ve
         .collect();
     fs::write(
         input_directory.join("inputs.json"),
-        serde_json::to_vec_pretty(&json!({"textures": textures, "frames": frames})).unwrap(),
+        serde_json::to_vec_pretty(
+            &json!({"textures": textures, "buffers": buffers, "frames": frames}),
+        )
+        .unwrap(),
     )
     .unwrap();
 }
@@ -403,7 +434,12 @@ pub fn replay_strict(directory: &Path, shaders: &Path, output: &Path) {
     );
 }
 
-/// Links `names` of the case `directory` into `into`.
+/// Run an independently carried sequence with contraction and fast math disabled.
+pub fn run_strict_sequence(directory: &Path, shaders: &Path, output: &Path) {
+    oracle(&["--compiler-mode", "strict"], shaders, directory, output);
+}
+
+/// Link a selection of case inputs or capture directories into an oracle run.
 pub fn link_case(directory: &Path, into: &Path, names: &[&str]) {
     fs::create_dir_all(into).unwrap();
     for name in names {

@@ -13,6 +13,8 @@ pub fn input(
         FfxSurfaceFormat::R16G16B16A16Float => wgpu::TextureFormat::Rgba16Float,
         FfxSurfaceFormat::R16G16Float => wgpu::TextureFormat::Rg16Float,
         FfxSurfaceFormat::R16G16Sint => wgpu::TextureFormat::Rg16Sint,
+        FfxSurfaceFormat::R16Float => wgpu::TextureFormat::R16Float,
+        FfxSurfaceFormat::R8Unorm => wgpu::TextureFormat::R8Unorm,
         FfxSurfaceFormat::R32Float => wgpu::TextureFormat::R32Float,
         FfxSurfaceFormat::R32Uint => wgpu::TextureFormat::R32Uint,
         _ => panic!("unimplemented input format {format:?}"),

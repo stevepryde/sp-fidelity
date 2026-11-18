@@ -163,3 +163,18 @@ not establish forced-wave64 GPU execution.
 
 All 1,408 upscaler exports and 204 frame-generation exports were compiled
 through Metal's runtime compiler on Apple M5 during the FSR3.1 port.
+
+## Reflection denoiser
+
+The three reflection entries of `FfxDenoiserPass` occupy indices 5–7. The
+oracle retains both host-selected wave32 variants, `options-0x04` (FP32) and
+`options-0x06` (FP16). SDK 1.1.4 passes each reflection pass ID as the
+context flags, setting the inverted-depth permutation bit on all three.
+Regenerate both from this crate's directory with the pinned SDK tree.
+
+```sh
+for options in 4 6; do
+  python3 tools/compile_dxc_oracle.py --effect denoiser --options "$options" \
+    --dxc ~/VulkanSDK/1.4.357.1/macOS/bin/dxc-3.7 --spirv-cross /opt/homebrew/bin/spirv-cross
+done
+```

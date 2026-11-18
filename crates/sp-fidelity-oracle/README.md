@@ -2,8 +2,7 @@
 
 Development-only evidence for the [`sp-fidelity`](../sp-fidelity/README.md) port
 and [`sp-fidelity-wgpu`](../sp-fidelity-wgpu/README.md). Not
-published; neither runtime crate depends on it. It holds the FSR2 and full FSR3.1 host and
-GPU comparisons against the original SDK source.
+published; neither runtime crate depends on it. It compares the FSR2, FSR3.1 and reflection denoiser hosts and shaders against AMD’s original SDK source.
 
 - `oracle/host.cpp` runs AMD's unchanged C++ host of an effect through a
   recording `FfxInterface` that prints one JSON event per backend call.
@@ -241,3 +240,22 @@ SPIRV-Cross from Vulkan SDK 1.4.357.1, targeting Metal 3.1. The windowed
 `fsr3_present` example exercises the actual surface separately from these
 headless GPU comparisons. Sources retain AMD's original license and pinned
 revision; see the core crate's conformance record for scope and differences.
+
+## Reflection denoiser
+
+The host oracle compares the reflection entry points of AMD's denoiser 1.3
+with the Rust component. The GPU oracle replays each of the three passes from
+identical inputs and runs the entire sequence with independent histories.
+Its five frames include a moving highlight, a translated camera, depth and
+normal edges, mirror and rough surfaces, partial edge tiles, a reset, and
+an indirect dispatch with zero active tiles. The tile list and indirect
+arguments are actual GPU buffers. Strict Metal controls compile Naga's WGSL
+translation and DXC's HLSL translation with the same floating-point settings.
+The portable-storage test runs the production path on a device requested
+with core WebGPU features and compares every frame’s application output with
+the native-storage run.
+
+```sh
+cargo test -p sp-fidelity-oracle --test denoiser_host_event_stream
+cargo test -p sp-fidelity-oracle --test denoiser_passes -- --ignored --nocapture --test-threads=1
+```

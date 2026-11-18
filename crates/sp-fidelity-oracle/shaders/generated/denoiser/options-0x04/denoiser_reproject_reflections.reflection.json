@@ -1,0 +1,190 @@
+{
+  "metalEntryPoint": "main0",
+  "workgroupSize": [
+    8,
+    8,
+    1
+  ],
+  "resources": [
+    {
+      "name": "r_input_depth_hierarchy",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 2,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_input_motion_vectors",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 3,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_input_normal",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 4,
+      "arrayIndex": 0,
+      "mslIndex": 2,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_radiance",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 7,
+      "arrayIndex": 0,
+      "mslIndex": 3,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_radiance_history",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 8,
+      "arrayIndex": 0,
+      "mslIndex": 4,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_variance",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 9,
+      "arrayIndex": 0,
+      "mslIndex": 5,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_sample_count",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 10,
+      "arrayIndex": 0,
+      "mslIndex": 6,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_extracted_roughness",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 12,
+      "arrayIndex": 0,
+      "mslIndex": 7,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_depth_history",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 13,
+      "arrayIndex": 0,
+      "mslIndex": 8,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_normal_history",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 14,
+      "arrayIndex": 0,
+      "mslIndex": 9,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "r_roughness_history",
+      "kind": "texture",
+      "registerClass": "t",
+      "register": 15,
+      "arrayIndex": 0,
+      "mslIndex": 10,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "s_LinearSampler",
+      "kind": "sampler",
+      "registerClass": "s",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "sampler",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_variance",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 1,
+      "arrayIndex": 0,
+      "mslIndex": 11,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_sample_count",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 2,
+      "arrayIndex": 0,
+      "mslIndex": 12,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_average_radiance",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 3,
+      "arrayIndex": 0,
+      "mslIndex": 13,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_reprojected_radiance",
+      "kind": "texture",
+      "registerClass": "u",
+      "register": 9,
+      "arrayIndex": 0,
+      "mslIndex": 14,
+      "mslKind": "texture",
+      "byteSize": 0
+    },
+    {
+      "name": "rw_denoiser_tile_list",
+      "kind": "buffer",
+      "registerClass": "u",
+      "register": 5,
+      "arrayIndex": 0,
+      "mslIndex": 1,
+      "mslKind": "buffer",
+      "byteSize": 0
+    },
+    {
+      "name": "cbDenoiserReflections",
+      "kind": "constant_buffer",
+      "registerClass": "b",
+      "register": 0,
+      "arrayIndex": 0,
+      "mslIndex": 0,
+      "mslKind": "buffer",
+      "byteSize": 236
+    }
+  ]
+}

@@ -5,8 +5,8 @@ It is disabled by default behind `frame-generation`.
 [C++ reproductions](https://github.com/stevepryde/sp-fidelity/tree/main/crates/sp-fidelity-oracle/repro/frameinterpolation_edges) are retained and fixes are welcome;
 no further frame-generation development is planned.
 
-A standalone, unofficial Rust and WGSL port with documented corrections of the FSR2 and FSR3.1.4 C++ and HLSL
-source in
+A standalone, unofficial Rust and WGSL port of FSR2, FSR3.1.4 and the
+FidelityFX Reflections Denoiser from the C++ and HLSL in
 [AMD FidelityFX SDK 1.1.4](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55),
 produced entirely using AI coding agents. Not affiliated with, endorsed by,
 or supported by AMD. The original sources and notices are retained unedited
@@ -19,6 +19,7 @@ in `vendor/sdk-1.1.4/`.
 - HDR, dynamic resolution, automatic exposure and RCAS sharpening.
 - Every FSR2 GPU pass in WGSL, with FP32 and optional FP16 permutations.
 - FSR3.1.4 upscaling, including Native AA and runtime tuning.
+- Standalone FidelityFX Reflections Denoiser 1.3.
 - Optional experimental frame-generation APIs for contributors.
 - Supporting SDK host core, GPU core and SPD; no Rust dependencies.
 - Other FidelityFX effects are planned.
@@ -28,6 +29,36 @@ backend implements `interface::FfxInterface`. Both crates compile for
 `wasm32-unknown-unknown`, but FSR2/FSR3 execution in browser WebGPU and forced
 wave64 are not supported. The upscaled output uses RGBA16F. The SDK's
 standalone generate-reactive host call remains a no-op; its GPU pass is ported.
+
+## Reflections denoiser
+
+AMD's SSSR calls this component after its ray intersection pass. A caller can
+use the same denoiser with a screen-space or world-space ray tracer. Create
+an `FfxDenoiserContext` with `FFX_DENOISER_REFLECTIONS`, the working size and
+the format of the normals that will be copied to history. Keep one context
+per independent view and size.
+
+Call `ffx_denoiser_context_dispatch_reflections` once per frame. Supply
+scene-linear incident radiance in RGB and world-space ray length in alpha
+of `radiance_a`. Supply an estimate for a ray that misses (SSSR evaluates the
+environment). A numeric black sample represents black light and contributes
+to the filter. Pass the matching depth, world normals, roughness, motion,
+camera transforms and list of packed 8×8 tile origins. The dispatch reads
+three indirect workgroup counts at byte offset 12. The reference schedules
+reprojection, prefiltering and temporal resolve on that same list.
+
+Keep two caller-owned radiance textures and two variance textures. Supply
+the previous result in `radiance_b` and its variance in `variance_b`; the
+passes reuse those textures for scratch after reading them. The next frame
+uses this frame's `radiance_a` and `variance_a` as its B pair. The host also
+copies the resolved A texture to `output`. Only RGB is meaningful for
+lighting there. AMD's shader stores blue in alpha. The SDK's `reset` clears
+its two tile-average textures; callers that need to discard every history
+can recreate the context and initialize their own textures.
+
+The original [SSSR call site](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55/sdk/src/components/sssr/ffx_sssr.cpp)
+and [denoiser host](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/c6efa6bf7f2027b3ec94f28578bb5965eabb9e55/sdk/src/components/denoiser/ffx_denoiser.cpp)
+show the caller and component sides of this interface.
 
 ## FSR3.1.4
 

@@ -50,6 +50,19 @@ fn expected_dumps(case: &Path, stages: &[&str]) -> Result<HashMap<PathBuf, Expec
             },
         );
     }
+    for buffer in manifest["buffers"].as_array().into_iter().flatten() {
+        shapes.insert(
+            buffer["name"].as_str().unwrap().to_owned(),
+            Shape {
+                buffer: true,
+                format: 0,
+                width: u32::try_from(buffer["byteSize"].as_u64().unwrap()).unwrap(),
+                height: 1,
+                mips: 1,
+                layers: 1,
+            },
+        );
+    }
     let mut expected = HashMap::new();
     let mut frame = 0;
     let mut writers: HashMap<String, String> = HashMap::new();
@@ -309,6 +322,26 @@ pub fn compare(
     stages: &[&str],
     admit: &dyn Fn(&Difference) -> Result<&'static str, String>,
 ) -> Comparison {
+    compare_dumps(case, stages, admit, false)
+}
+
+/// For fixtures whose entire output must be finite. Exact means raw bytes,
+/// including the sign bit of zero. A nonfinite value on either side fails even
+/// if both implementations wrote the same bit pattern.
+pub fn compare_finite(
+    case: &Path,
+    stages: &[&str],
+    admit: &dyn Fn(&Difference) -> Result<&'static str, String>,
+) -> Comparison {
+    compare_dumps(case, stages, admit, true)
+}
+
+fn compare_dumps(
+    case: &Path,
+    stages: &[&str],
+    admit: &dyn Fn(&Difference) -> Result<&'static str, String>,
+    finite_bitwise: bool,
+) -> Comparison {
     let mut result = Comparison::default();
     let expected = match expected_dumps(case, stages) {
         Ok(expected) => expected,
@@ -351,6 +384,27 @@ pub fn compare(
         let directory = path.iter().nth(1).unwrap().to_str().unwrap().to_owned();
         let count = result.dumps.entry(directory).or_default();
         count.0 += 1;
+        let decoded = if finite_bitwise && !e.shape.buffer {
+            let x = decode(e.shape.format, &a);
+            let y = decode(e.shape.format, &b);
+            let nonfinite = [("port", &x), ("SDK", &y)]
+                .into_iter()
+                .find_map(|(side, data)| {
+                    data.iter()
+                        .position(|texel| texel.iter().any(|v| !v.is_finite()))
+                        .map(|i| (side, i))
+                });
+            if let Some((side, i)) = nonfinite {
+                result.incomplete.push(format!(
+                    "{}: {side} wrote a nonfinite value at texel {i}",
+                    path.display()
+                ));
+                continue;
+            }
+            Some((x, y))
+        } else {
+            None
+        };
         if a == b {
             count.1 += 1;
             result.exact += 1;
@@ -372,14 +426,15 @@ pub fn compare(
             });
             continue;
         }
-        let (x, y) = (decode(e.shape.format, &a), decode(e.shape.format, &b));
+        let (x, y) =
+            decoded.unwrap_or_else(|| (decode(e.shape.format, &a), decode(e.shape.format, &b)));
         let texel = a.len() / x.len();
         let mut texels = 0;
         let mut maximum = 0f64;
         let mut bounds = [u32::MAX, u32::MAX, 0, 0];
         for (index, (p, q)) in x.iter().zip(&y).enumerate() {
             let bytes = index * texel..(index + 1) * texel;
-            if p == q || a[bytes.clone()] == b[bytes] {
+            if (!finite_bitwise && p == q) || a[bytes.clone()] == b[bytes] {
                 continue;
             }
             texels += 1;

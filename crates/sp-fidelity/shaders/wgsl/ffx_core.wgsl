@@ -36,6 +36,8 @@
 #ifndef FFX_CORE_H
 #define FFX_CORE_H
 
+#include "ffx_core_lane_math.wgsl"
+
 // ---- ffx_common_types.h (FFX_HLSL, FFX_HLSL_SM >= 62) ----------------------
 
 // #define FFX_PARAMETER_IN in / FFX_PARAMETER_OUT out / FFX_PARAMETER_INOUT inout
@@ -211,18 +213,6 @@ fn ffxBroadcast3_u32(value: FfxUInt32) -> FfxUInt32x3
 fn ffxBroadcast4_u32(value: FfxUInt32) -> FfxUInt32x4
 {
     return FfxUInt32x4(value, value, value, value);
-}
-
-fn ffxBitfieldExtract(src: FfxUInt32, off: FfxUInt32, bits: FfxUInt32) -> FfxUInt32
-{
-    let mask: FfxUInt32 = (1u << bits) - 1u;
-    return (src >> off) & mask;
-}
-
-fn ffxBitfieldInsertMask(src: FfxUInt32, ins: FfxUInt32, bits: FfxUInt32) -> FfxUInt32
-{
-    let mask: FfxUInt32 = (1u << bits) - 1u;
-    return (ins & mask) | (src & (~mask));
 }
 
 fn ffxAsUInt32_f32(x: FfxFloat32) -> FfxUInt32
@@ -740,11 +730,6 @@ fn ffxRemapForQuad(a: FfxUInt32) -> FfxUInt32x2
     return FfxUInt32x2(ffxBitfieldExtract(a, 1u, 3u), ffxBitfieldInsertMask(ffxBitfieldExtract(a, 3u, 3u), a, 1u));
 }
 
-fn ffxRemapForWaveReduction(a: FfxUInt32) -> FfxUInt32x2
-{
-    return FfxUInt32x2(ffxBitfieldInsertMask(ffxBitfieldExtract(a, 2u, 3u), a, 1u), ffxBitfieldInsertMask(ffxBitfieldExtract(a, 3u, 3u), ffxBitfieldExtract(a, 1u, 2u), 2u));
-}
-
 // ---- ffx_core_gpu_common_half.h ----------------------------------------------
 
 #if FFX_HALF
@@ -914,28 +899,6 @@ fn ffxWgslOutside(coordinate: FfxInt32x2, size: FfxUInt32x2) -> FfxBoolean
 fn f16tof32_u32x2(value: FfxUInt32x2) -> FfxFloat32x2
 {
     return FfxFloat32x2(unpack2x16float(value.x).x, unpack2x16float(value.y).x);
-}
-
-// isinf/isnan by IEEE-754 binary32 classification. Half values widen to
-// binary32 exactly, infinities and NaNs included.
-fn isinf_f32(x: FfxFloat32) -> FfxBoolean
-{
-    return (bitcast<FfxUInt32>(x) & 0x7fffffffu) == 0x7f800000u;
-}
-
-fn isnan_f32(x: FfxFloat32) -> FfxBoolean
-{
-    return (bitcast<FfxUInt32>(x) & 0x7fffffffu) > 0x7f800000u;
-}
-
-fn isinf_f32x3(x: FfxFloat32x3) -> vec3<bool>
-{
-    return (bitcast<FfxUInt32x3>(x) & FfxUInt32x3(0x7fffffffu)) == FfxUInt32x3(0x7f800000u);
-}
-
-fn isnan_f32x3(x: FfxFloat32x3) -> vec3<bool>
-{
-    return (bitcast<FfxUInt32x3>(x) & FfxUInt32x3(0x7fffffffu)) > FfxUInt32x3(0x7f800000u);
 }
 
 // ffx_core_hlsl.h:1378. WGSL's unpack is the HLSL f16tof32 pair.

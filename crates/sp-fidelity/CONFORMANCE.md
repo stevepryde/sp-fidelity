@@ -19,6 +19,60 @@ Results are from Apple M5, Metal, wgpu 30.0.1 (MSL 4.0), DXC 1.9.0.5399
 (HLSL 2021, the SDK's bundled compiler default), SPIRV-Cross 1.4.357,
 2026-10-06.
 
+## FidelityFX Reflections Denoiser 1.3
+
+The reflection component comes from the same SDK revision as the upscalers.
+`denoiser_host_event_stream` runs the vendored C++ and Rust across five frames
+per configuration, with FP32, FP16 and FP16 with wave64 advertised. All 561
+events matched, including constants, first-frame and reset clears, resource
+bindings, indirect dispatches, output and history copies, and teardown.
+The C++ passes its pass ID to the permutation helper in the flags position.
+All three reflections pass IDs have the depth-inverted bit set. The Rust
+host preserves this behavior. Wave64 selection in this comparison exercises
+the host.
+
+The C++ trace binds the previous frame's tile averages to prefilter and
+temporal resolve. Resolve also reads the previous sample counts. Reprojection
+writes the opposite average and sample-count surfaces for the next frame.
+This ordering matters for narrow HDR highlights. In the independent FP16 HLSL
+sequence, the three-pixel highlight's red channel at (2, 6) went from 4.0 to
+0 on the first frame. At (4, 6) on the next frame it went from 4.0 to
+0.2722168. These are measurements of AMD's denoiser on the fixture.
+
+`denoiser_passes` runs the three original HLSL entries compiled with DXC and
+SPIRV-Cross against the production WGSL. The 29×19 five-frame fixture moves a
+highlight across a depth and normal discontinuity, translates the camera,
+changes the active tile count and exercises reset and empty dispatch. Each
+comparison covers the three passes' UAVs and all four SDK copy destinations.
+With fast math and contraction disabled in both Metal pipelines, all 300
+resource dumps matched byte-for-byte. Each precision (FP32 and FP16)
+contributed 75 from identical pass inputs and 75 from the independently
+carried sequence. Under wgpu's normal Metal fast math (SDK-P22), identical
+inputs gave 8 differing dumps in FP32 and 9 in FP16. Independently carried
+history gave 23 in each precision. The largest absolute difference at the
+application output on these frames was 0.000244 in FP32 and 0.061035 in FP16.
+The normal-run check rejects nonfinite texture channels and limits both the
+largest channel error and the number of changed texels per dump. The ceilings
+below were measured against the original HLSL on the Apple M5, using this
+fixture. Each cell gives the maximum absolute channel error and maximum
+differing texels in one dump.
+
+| Precision and inputs | Radiance | Variance | Packed tile average |
+| --- | --- | --- | --- |
+| FP32, identical inputs | 0.000244140625 / 5 | 0.000244140625 / 72 | exact |
+| FP32, carried history | 0.00048828125 / 9 | 0.000244140625 / 70 | exact |
+| FP16, identical inputs | 0.06103515625 / 87 | 0.080078125 / 160 | exact |
+| FP16, carried history | 0.072021484375 / 207 | 0.080078125 / 301 | 0.0078125 / 2 |
+
+Resolved application radiance has a tighter carried-history ceiling of
+0.000244140625 in FP32 and 0.06103515625 in FP16. All other outputs require
+raw-byte equality. Strict controls require finite channels and raw-byte
+equality in every dump, including signed zeros.
+
+On Metal, a core-WebGPU device using widened storage and four-tap depth
+filtering produced bit-exact application RGBA16F outputs relative to native
+storage in all five frames (2,755 texels).
+
 ## FSR2 host
 
 `crates/sp-fidelity-oracle/tests/fsr2_host_event_stream.rs`: AMD's unchanged

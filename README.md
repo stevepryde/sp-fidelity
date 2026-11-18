@@ -10,8 +10,8 @@ no further frame-generation development is planned.
 [![sp-fidelity-wgpu on crates.io](https://img.shields.io/crates/v/sp-fidelity-wgpu.svg?label=sp-fidelity-wgpu)](https://crates.io/crates/sp-fidelity-wgpu)
 [![sp-fidelity-wgpu docs](https://docs.rs/sp-fidelity-wgpu/badge.svg)](https://docs.rs/sp-fidelity-wgpu)
 
-A standalone, unofficial Rust and WGSL port with documented corrections of the FSR2 and FSR3.1.4 C++ and HLSL
-source in [AMD FidelityFX SDK 1.1.4](crates/sp-fidelity/vendor/sdk-1.1.4/source-revision.txt),
+A standalone, unofficial Rust and WGSL port of FSR2, FSR3.1.4 and the
+FidelityFX Reflections Denoiser from the C++ and HLSL in [AMD FidelityFX SDK 1.1.4](crates/sp-fidelity/vendor/sdk-1.1.4/source-revision.txt),
 produced entirely using AI coding agents, with a wgpu backend.
 Not affiliated with, endorsed by, or supported by AMD. Vendored C++/HLSL remains
 unchanged; the port's corrections of verified SDK bugs (FSR2's accumulate at the
@@ -28,6 +28,7 @@ in the [conformance record](crates/sp-fidelity/CONFORMANCE.md#sdk-p34--outgoing-
 | FSR2 temporal upscaling: Quality, Balanced, Performance, Ultra Performance | Supported |
 | HDR, dynamic resolution, automatic exposure, RCAS sharpening | Supported |
 | All FSR2 GPU passes, FP32 and optional FP16 permutations | Supported |
+| FidelityFX Reflections Denoiser 1.3 | Standalone reprojection, prefilter and temporal resolve |
 | FSR3.1.4 temporal upscaling | Supported; see conformance record |
 | FSR3 frame generation and composite generation API | Unsupported; retained for diagnostics |
 | Native frame-generation presentation and pacing | Unsupported; retained for diagnostics |
@@ -49,14 +50,18 @@ Add the crates.io dependencies:
 
 ```toml
 [dependencies]
-sp-fidelity = "0.3.2"
-sp-fidelity-wgpu = "0.3.2"
+sp-fidelity = "0.3.3"
+sp-fidelity-wgpu = "0.3.3"
 wgpu = "30.0.1"
 ```
 
-0.3.2 corrects SDK-P36 and SDK-P37, which change FSR2's output at the frame's
-edges where history comes from off screen or the neighbourhood crosses the
-edge; the API is unchanged and applications need no code changes.
+0.3.3 adds the standalone reflections denoiser. Existing FSR integrations
+need no code changes.
+
+The `denoiser` module accepts caller-traced reflection samples. AMD's SSSR uses
+this same component after ray intersection. Applications with their own ray
+tracer can supply its inputs directly. The [core crate guide](crates/sp-fidelity/README.md#reflections-denoiser)
+describes the signal and frame-to-frame resource contract.
 
 Use the standalone `fsr2` or `fsr3upscaler` APIs for temporal upscaling.
 The `fsr3` and `fsr3_present` examples exercise the unsupported frame-generation

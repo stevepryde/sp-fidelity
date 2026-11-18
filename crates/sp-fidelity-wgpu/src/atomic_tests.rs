@@ -65,6 +65,7 @@ fn buffer_backed_atomic_texture_preserves_every_add_across_registrations() {
         cache: None,
     });
     backend.pipelines.push(Some(Pipeline {
+        effect_context_id: context,
         effect: FfxEffect::OpticalFlow,
         pass: 0,
         pipeline,

@@ -1,5 +1,5 @@
-//! Rust and WGSL ports of FSR2 and FSR3.1.4 temporal upscaling from AMD
-//! FidelityFX SDK 1.1.4 (`c6efa6bf7f2027b3ec94f28578bb5965eabb9e55`).
+//! Rust and WGSL ports of FSR2 and FSR3.1.4 temporal upscaling and the
+//! reflections denoiser from AMD FidelityFX SDK 1.1.4 (`c6efa6bf7f2027b3ec94f28578bb5965eabb9e55`).
 //! The original source and notices are retained in `vendor/sdk-1.1.4`.
 //! This unofficial port was produced using AI coding agents and is not
 //! affiliated with, endorsed by, or supported by AMD.
@@ -19,6 +19,7 @@
 //! | `include/FidelityFX/host/ffx_interface.h` | [`interface`] |
 //! | `include/FidelityFX/host/ffx_message.h`, `src/shared/ffx_message.cpp` | [`message`] |
 //! | `include/FidelityFX/host/ffx_util.h` | [`util`] |
+//! | `include/FidelityFX/host/ffx_denoiser.h`, `src/components/denoiser/` (reflections) | [`denoiser`] |
 //! | `include/FidelityFX/host/ffx_fsr2.h`, `src/components/fsr2/` | [`fsr2`] |
 //! | `include/FidelityFX/host/ffx_fsr3upscaler.h`, `src/components/fsr3upscaler/` | [`fsr3upscaler`] |
 //! | `include/FidelityFX/host/ffx_opticalflow.h`, `src/components/opticalflow/` | `opticalflow` (feature `frame-generation`) |
@@ -30,6 +31,7 @@
 //! | `include/FidelityFX/gpu/`, `src/backends/dx12/shaders/` (as WGSL) | [`shaders`] |
 pub(crate) mod assert;
 pub mod blob_accessors;
+pub mod denoiser;
 pub mod error;
 #[cfg(feature = "frame-generation")]
 pub mod frameinterpolation;

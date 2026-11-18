@@ -102,3 +102,22 @@ pub const FRAMEINTERPOLATION: Effect = Effect {
     sources: &["src/components/frameinterpolation/ffx_frameinterpolation.cpp"],
     includes: &[],
 };
+
+/// Original SDK reflections denoiser host and GPU passes. The SDK reserves
+/// pass IDs 0 through 4 for the shadow denoiser.
+pub const DENOISER: Effect = Effect {
+    name: "denoiser",
+    stages: &[
+        "denoiser_prepare_shadow_mask",
+        "denoiser_shadows_tile_classification",
+        "denoiser_filter_soft_shadows_0",
+        "denoiser_filter_soft_shadows_1",
+        "denoiser_filter_soft_shadows_2",
+        "denoiser_reproject_reflections",
+        "denoiser_prefilter_reflections",
+        "denoiser_resolve_temporal_reflections",
+    ],
+    driver: "denoiser_host.cpp",
+    sources: &["src/components/denoiser/ffx_denoiser.cpp"],
+    includes: &[],
+};

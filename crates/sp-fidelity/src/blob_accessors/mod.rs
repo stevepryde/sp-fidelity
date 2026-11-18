@@ -12,6 +12,7 @@ use super::error::*;
 use super::interface::FfxPass;
 use super::types::*;
 
+pub mod denoiser_shaderblobs;
 #[cfg(feature = "frame-generation")]
 pub mod frameinterpolation_shaderblobs;
 pub mod fsr2_shaderblobs;
@@ -30,6 +31,7 @@ pub fn ffx_get_permutation_blob_by_index(
     permutation_options: u32,
 ) -> Result<FfxShaderBlob, FfxErrorCode> {
     match effect_id {
+        FfxEffect::Denoiser => return denoiser_shaderblobs::denoiser_get_permutation_blob_by_index(pass_id, permutation_options),
         FfxEffect::Fsr2 => {
             return fsr2_shaderblobs::fsr2_get_permutation_blob_by_index(
                 pass_id,
@@ -57,6 +59,9 @@ pub fn ffx_is_wave64(
     is_wave64: &mut bool,
 ) -> Result<(), FfxErrorCode> {
     match effect_id {
+        FfxEffect::Denoiser => {
+            return denoiser_shaderblobs::denoiser_is_wave64(permutation_options, is_wave64);
+        }
         FfxEffect::Fsr2 => {
             return fsr2_shaderblobs::fsr2_is_wave64(permutation_options, is_wave64);
         }

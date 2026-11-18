@@ -21,6 +21,17 @@ macro_rules! modules {
 /// Retained WGSL modules, by path relative to `shaders/wgsl/`.
 const MODULES: &[(&str, &str)] = modules![
     "ffx_core.wgsl",
+    "ffx_core_lane_math.wgsl",
+    "denoiser/ffx_denoiser_prefilter_reflections_pass.wgsl",
+    "denoiser/ffx_denoiser_reflections_callbacks.wgsl",
+    "denoiser/ffx_denoiser_reflections_common.wgsl",
+    "denoiser/ffx_denoiser_reflections_config.wgsl",
+    "denoiser/ffx_denoiser_reflections_prefilter.wgsl",
+    "denoiser/ffx_denoiser_reflections_portable_average.wgsl",
+    "denoiser/ffx_denoiser_reflections_reproject.wgsl",
+    "denoiser/ffx_denoiser_reflections_resolve_temporal.wgsl",
+    "denoiser/ffx_denoiser_reproject_reflections_pass.wgsl",
+    "denoiser/ffx_denoiser_resolve_temporal_reflections_pass.wgsl",
     "spd/ffx_spd.wgsl",
     "fsr1/ffx_fsr1.wgsl",
     "fsr2/ffx_fsr2_resources.wgsl",
@@ -221,6 +232,33 @@ pub const FFX_WGSL_ENTRY_POINT: &str = "CS";
 /// cannot request a subgroup size, so both tables share one source and a
 /// backend must not select a wave64 blob (SDK-P6).
 pub fn ffx_get_wgsl_source(blob: &FfxShaderBlob) -> Option<String> {
+    assemble_wgsl(blob, &[])
+}
+
+/// Assemble a reflection pass for the storage formats supported by a WebGPU device.
+/// Widening uses RGBA16Float for R16Float scalar targets and/or packed average
+/// radiance. The latter retains the SDK format's RGB precision before filtering.
+/// With unfilterable R32Float depth, the shader evaluates the four linear/clamp taps.
+pub fn ffx_get_denoiser_wgsl_source(
+    blob: &FfxShaderBlob,
+    widen_scalar: bool,
+    widen_average: bool,
+    filterable_depth: bool,
+) -> Option<String> {
+    if !blob.shader_name.starts_with("ffx_denoiser_") {
+        return None;
+    }
+    assemble_wgsl(
+        blob,
+        &[
+            ("FFX_WGSL_DENOISER_WIDEN_SCALAR", widen_scalar),
+            ("FFX_WGSL_DENOISER_WIDEN_AVERAGE", widen_average),
+            ("FFX_WGSL_DENOISER_MANUAL_DEPTH_FILTER", !filterable_depth),
+        ],
+    )
+}
+
+fn assemble_wgsl(blob: &FfxShaderBlob, backend_defines: &[(&str, bool)]) -> Option<String> {
     let file = format!("{}.wgsl", blob.shader_name);
     let (module, _) = MODULES
         .iter()
@@ -238,6 +276,11 @@ pub fn ffx_get_wgsl_source(blob: &FfxShaderBlob) -> Option<String> {
         ]),
         output: String::new(),
     };
+    for &(name, value) in backend_defines {
+        preprocessor
+            .defines
+            .insert(name.to_owned(), u8::from(value).to_string());
+    }
     for (prefix, defines) in EFFECT_DEFINES {
         if blob.shader_name.starts_with(prefix) {
             for (name, value) in *defines {

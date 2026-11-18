@@ -863,10 +863,27 @@ pub fn strict_variants(
         serde_json::from_slice(&compiled(&original.join("manifest.json"))).unwrap();
 
     let mut resources = msl::BindingMap::default();
+    let mut buffer_names = std::collections::HashMap::new();
     for r in reflection["resources"].as_array().unwrap() {
         let register = u32::try_from(r["register"].as_u64().unwrap()).unwrap();
         let slot = u8::try_from(r["mslIndex"].as_u64().unwrap()).unwrap();
         let (offset, target) = match r["registerClass"].as_str().unwrap() {
+            class @ ("t" | "u") if r["kind"] == "buffer" => {
+                let offset = if class == "u" {
+                    FFX_WGSL_BINDING_OFFSET_UAV
+                } else {
+                    FFX_WGSL_BINDING_OFFSET_SRV
+                };
+                buffer_names.insert(offset + register, r["name"].clone());
+                (
+                    offset,
+                    msl::BindTarget {
+                        buffer: Some(slot),
+                        mutable: class == "u",
+                        ..Default::default()
+                    },
+                )
+            }
             "t" => (
                 FFX_WGSL_BINDING_OFFSET_SRV,
                 msl::BindTarget {
@@ -930,6 +947,7 @@ pub fn strict_variants(
             FFX_WGSL_ENTRY_POINT.to_owned(),
             msl::EntryPointResources {
                 resources,
+                sizes_buffer: Some(30),
                 ..Default::default()
             },
         )]),
@@ -993,8 +1011,20 @@ pub fn strict_variants(
                 .next_multiple_of(16)
         })
         .collect();
-    let entry = manifest["passes"][stage].take();
-    manifest["passes"] = json!({ stage: entry });
+    // Naga's _mslBufferSizes fields follow the globals with runtime arrays
+    // in declaration order. Feed the actual Metal buffer lengths, as wgpu does.
+    let sizes: Vec<_> = module
+        .global_variables
+        .iter()
+        .filter(|(_, v)| {
+            module.types[v.ty]
+                .inner
+                .needs_host_buffer_byte_size(&module.types)
+        })
+        .map(|(_, v)| &buffer_names[&v.binding.as_ref().unwrap().binding])
+        .collect();
+    let pass_entry = manifest["passes"][stage].take();
+    manifest["passes"] = json!({});
     let original_msl = fs::read_to_string(original.join(format!("{stage}.metal"))).unwrap();
     let port_entry = translation.entry_point_names[0].as_ref().unwrap().clone();
     let original_entry = reflection["metalEntryPoint"].clone();
@@ -1012,6 +1042,11 @@ pub fn strict_variants(
         )
         .unwrap();
         reflection["metalEntryPoint"] = entry;
+        if name == "port" && !sizes.is_empty() {
+            reflection["bufferSizes"] = json!({"index":30, "names":sizes});
+        } else {
+            reflection.as_object_mut().unwrap().remove("bufferSizes");
+        }
         reflection["workgroupMemorySizes"] = if name == "port" {
             json!(workgroup_memory_sizes)
         } else {
@@ -1022,11 +1057,14 @@ pub fn strict_variants(
             serde_json::to_vec_pretty(&reflection).unwrap(),
         )
         .unwrap();
-        fs::write(
-            variant.join("manifest.json"),
-            serde_json::to_vec_pretty(&manifest).unwrap(),
-        )
-        .unwrap();
+        let path = variant.join("manifest.json");
+        let mut table: Value = if path.exists() {
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap()
+        } else {
+            manifest.clone()
+        };
+        table["passes"][stage] = pass_entry.clone();
+        fs::write(path, serde_json::to_vec_pretty(&table).unwrap()).unwrap();
         shaders
     })
 }

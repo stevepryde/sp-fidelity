@@ -432,6 +432,15 @@ class Oracle {
             NSArray* workgroupMemory = p.reflection[@"workgroupMemorySizes"];
             for (NSUInteger index = 0; index < workgroupMemory.count; ++index)
                 [encoder setThreadgroupMemoryLength:num(workgroupMemory[index]) atIndex:index];
+            NSDictionary* sizes = p.reflection[@"bufferSizes"];
+            if (sizes) {
+                std::vector<uint32_t> lengths;
+                for (NSString* name in sizes[@"names"]) {
+                    NSArray* bound = bindings.at(str(name)).at(0);
+                    lengths.push_back(uint32_t(resource(str(bound[2])).buffer.length));
+                }
+                [encoder setBytes:lengths.data() length:lengths.size() * sizeof(uint32_t) atIndex:num(sizes[@"index"])];
+            }
             if (p.diagnosticTrace)
                 [encoder setBuffer:p.diagnosticTrace offset:0
                            atIndex:num(p.reflection[@"diagnosticTrace"][@"mslIndex"])];
@@ -577,6 +586,14 @@ public:
         loadVariants();
         id manifest = json(inputDir / "inputs.json");
         NSArray* textures = [manifest isKindOfClass:[NSArray class]] ? manifest : manifest[@"textures"];
+        NSArray* buffers = [manifest isKindOfClass:[NSArray class]] ? nil : manifest[@"buffers"];
+        for (NSDictionary* desc in buffers) {
+            const std::string name = str(desc[@"name"]);
+            externals.insert(name);
+            create(name, true, 0, num(desc[@"byteSize"]), 1, 1, 1, 0, false);
+            auto data = bytes(inputDir / str(desc[@"file"]));
+            upload(resource(name), &data);
+        }
         inputFrames = [manifest isKindOfClass:[NSArray class]] ? nil : manifest[@"frames"];
         if (!textures) fail("inputs.json must be an array or contain textures");
         for (NSDictionary* desc in textures) {
@@ -585,7 +602,7 @@ public:
             externals.insert(name);
             create(name, false, num(desc[@"format"]), num(desc[@"width"]), num(desc[@"height"]),
                    desc[@"mipCount"] ? num(desc[@"mipCount"]) : 1,
-                   desc[@"layers"] ? num(desc[@"layers"]) : (cube ? 6 : 1), 0, cube);
+                   desc[@"layers"] ? num(desc[@"layers"]) : (cube ? 6 : 1), [desc[@"writable"] boolValue] ? 2 : 0, cube);
             if (desc[@"file"] && desc[@"file"] != [NSNull null]) {
                 auto data = bytes(inputDir / str(desc[@"file"])); upload(resource(name), &data);
             }

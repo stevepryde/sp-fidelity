@@ -18,9 +18,10 @@ are recorded into the caller's `wgpu::CommandEncoder`.
 
 ## Use
 
-Create the device with `required_features()` (and `optional_features()` for the
-FP16 permutations), then get the interface and hand it to an effect context as
-the SDK's samples do:
+For FSR upscaling, request `required_features()` when creating the device.
+The standalone reflections denoiser uses core WebGPU features. Both effects
+can use FP16 permutations when the device enables `SHADER_F16`. Get the
+backend interface and hand it to the SDK effect context:
 
 ```rust
 let (backend, interface) = sp_fidelity_wgpu::ffx_get_interface_wgpu(&device);
@@ -77,6 +78,12 @@ needed. Timestamp pairs span both passes. See SDK-P14 in
 [CONFORMANCE.md](../sp-fidelity/CONFORMANCE.md) for the exact original-HLSL
 comparison and its platform limits.
 
+Dispatch jobs belong to their effect context. Unregistering a failed frame
+discards its unexecuted jobs before registration slots are reused. Pending
+resource initialization uploads survive a failed dispatch and are recorded
+before the next valid workload, including uploads for shared effect contexts.
+Timestamp pools measure SDK compute jobs; clear and copy jobs consume no slots.
+
 Each pipeline keeps the bind groups of the last two resource sets its jobs
 bound (FSR2 alternates two by frame) and its own uniform buffers, into which
 each job's constants are copied from one upload buffer per
@@ -86,6 +93,40 @@ is destroyed.
 `set_fp16_supported(false)` reports a device without FP16 so contexts created
 afterwards use the FP32 permutations.
 
+## Reflections denoiser
+
+The SDK denoises a caller's traced reflections in three indirect compute passes.
+The caller owns the tracer, both radiance and variance ping-pongs, the active
+8×8 tile list, the indirect arguments and the output. Create the context at
+the render size and swap each ping-pong pair once per frame. Supply noisy
+RGB and reflected ray length in radiance A's alpha. The resolve writes RGB
+and duplicates blue into alpha, as in AMD's shader.
+
+| Dispatch resource | wgpu allocation |
+| --- | --- |
+| Radiance A and B | `Rgba16Float`, sampled and storage. Radiance A also needs `COPY_SRC`. |
+| Variance A and B | `backend.borrow().reflections_variance_format()`, sampled and storage. |
+| Depth hierarchy | `R32Float` device depth, sampled and `COPY_SRC`. The history copy takes mip 0. |
+| Normal | Filterable texture matching `normals_history_buffer_format`, sampled and `COPY_SRC`. |
+| Motion | Sampled texture with XY motion, scaled by `motion_vector_scale`. |
+| Extracted roughness | `R8Unorm`, sampled and `COPY_SRC`. |
+| Tile list | `STORAGE` buffer of packed uint pixel origins, X in the low 16 bits, Y in the high 16. |
+| Arguments | `STORAGE` and `INDIRECT` buffer. Write `[tile_count, 1, 1]` starting at byte offset 12. |
+| Output | A separate `Rgba16Float` texture with `COPY_DST`. |
+
+Register the texture inputs with `ffx_get_resource_wgpu`. Register buffers with
+`backend.borrow_mut().ffx_get_buffer_resource_wgpu(&buffer, 4, name, state)?`.
+Both registrations expire when the encoder is returned.
+
+The device-only constructor uses `Rgba16Float` storage for the SDK's scalar
+samples and variance, and truncates average radiance to unsigned 11/11/10-bit
+precision at each store, matching the Direct3D conversion rule and Metal
+typed stores. Native Vulkan hardware chooses its own rounding mode. With access to the device's original
+adapter, `ffx_get_interface_wgpu_with_adapter(&device, &adapter)` selects
+native narrow storage where enabled and writable. R32F depth history uses
+hardware linear sampling when `FLOAT32_FILTERABLE` is enabled and four
+clamped texel loads otherwise.
+
 ## Experimental frame generation
 
 The `frame-generation` feature enables the core generation APIs and this
@@ -93,7 +134,7 @@ backend's `presentation` module and configuration callback. It forwards
 `sp-fidelity/frame-generation`; upscaling needs neither feature.
 
 ```toml
-sp-fidelity-wgpu = { version = "0.3.2", features = ["frame-generation"] }
+sp-fidelity-wgpu = { version = "0.3.3", features = ["frame-generation"] }
 ```
 
 Contributor examples:
