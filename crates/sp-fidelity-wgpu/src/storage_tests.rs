@@ -296,6 +296,9 @@ struct Case {
     auto_exposure: bool,
     /// Sharpening, and FSR2's generated reactivity.
     extras: bool,
+    /// The first frame's inputs, unjittered and with a reset, in every frame:
+    /// each frame then reduces what the one before it did.
+    still: bool,
 }
 
 const ONE_WORKGROUP: Case = Case {
@@ -304,16 +307,18 @@ const ONE_WORKGROUP: Case = Case {
     fp16: true,
     auto_exposure: true,
     extras: false,
+    still: false,
 };
 
 const CASES: [Case; 5] = [
-    // SPD reduces above mip 5: both of its dispatches run.
+    // Seven mips: SPD reduces above mip 5, so both of its dispatches run.
     Case {
         display: [200, 120],
         render: [133, 80],
         fp16: true,
         auto_exposure: false,
         extras: false,
+        still: false,
     },
     Case {
         display: [200, 120],
@@ -321,6 +326,7 @@ const CASES: [Case; 5] = [
         fp16: false,
         auto_exposure: true,
         extras: true,
+        still: false,
     },
     // Native AA.
     Case {
@@ -329,17 +335,19 @@ const CASES: [Case; 5] = [
         fp16: true,
         auto_exposure: true,
         extras: false,
+        still: false,
     },
-    // One SPD workgroup and seven mips: its second dispatch runs, and in one
-    // dispatch no other workgroup writes what it reads (`ONE_WORKGROUP`).
+    // One SPD workgroup and six mips: SPD stores the exposure at mip 5 in
+    // its one dispatch, where no other workgroup races (`ONE_WORKGROUP`).
     ONE_WORKGROUP,
-    // Six mips: SPD stops at mip 5 and stores the exposure there.
+    // Five mips: SPD stops at mip 4 and stores the exposure there.
     Case {
         display: [80, 60],
         render: [40, 30],
         fp16: true,
         auto_exposure: true,
         extras: true,
+        still: false,
     },
 ];
 
@@ -400,8 +408,17 @@ fn fsr2(device: &wgpu::Device, queue: &wgpu::Queue, case: Case, spd: Spd) -> (Wr
     let mut writes = Writes::new();
     for frame in 0..FRAMES {
         recorder.frame.set(frame as usize);
-        let inputs = Inputs::new(device, queue, case.render, frame);
-        let (x, y) = ffx_fsr2_get_jitter_offset(frame as i32, phases).unwrap();
+        let inputs = Inputs::new(
+            device,
+            queue,
+            case.render,
+            if case.still { 0 } else { frame },
+        );
+        let (x, y) = if case.still {
+            (0., 0.)
+        } else {
+            ffx_fsr2_get_jitter_offset(frame as i32, phases).unwrap()
+        };
         let mut description = FfxFsr2DispatchDescription {
             jitter_offset: FfxFloatCoords2D { x, y },
             motion_vector_scale: FfxFloatCoords2D {
@@ -413,7 +430,7 @@ fn fsr2(device: &wgpu::Device, queue: &wgpu::Queue, case: Case, spd: Spd) -> (Wr
             sharpness: 0.6,
             frame_time_delta: 16.6,
             pre_exposure: 1.,
-            reset: frame == 0,
+            reset: frame == 0 || case.still,
             camera_near: f32::MAX,
             camera_far: 0.1,
             camera_fov_angle_vertical: 1.,
@@ -509,8 +526,17 @@ fn fsr3(device: &wgpu::Device, queue: &wgpu::Queue, case: Case, spd: Spd) -> (Wr
     let mut writes = Writes::new();
     for frame in 0..FRAMES {
         recorder.frame.set(frame as usize);
-        let inputs = Inputs::new(device, queue, case.render, frame);
-        let (x, y) = ffx_fsr3_upscaler_get_jitter_offset(frame as i32, phases).unwrap();
+        let inputs = Inputs::new(
+            device,
+            queue,
+            case.render,
+            if case.still { 0 } else { frame },
+        );
+        let (x, y) = if case.still {
+            (0., 0.)
+        } else {
+            ffx_fsr3_upscaler_get_jitter_offset(frame as i32, phases).unwrap()
+        };
         let mut description = FfxFsr3UpscalerDispatchDescription {
             jitter_offset: FfxFloatCoords2D { x, y },
             motion_vector_scale: FfxFloatCoords2D {
@@ -523,7 +549,7 @@ fn fsr3(device: &wgpu::Device, queue: &wgpu::Queue, case: Case, spd: Spd) -> (Wr
             sharpness: 0.6,
             frame_time_delta: 16.6,
             pre_exposure: 1.,
-            reset: frame == 0,
+            reset: frame == 0 || case.still,
             camera_near: f32::MAX,
             camera_far: 0.1,
             camera_fov_angle_vertical: 1.,
@@ -765,6 +791,44 @@ fn split_spd_writes_what_one_dispatch_writes((run, effect, name): Effect) {
     assert_same(name, ONE_WORKGROUP, &expected, &actual, |_| true);
 }
 
+/// Defect: SPD's second dispatch reducing mip 5 differently from AMD's one
+/// dispatch, where it stores the 1x1 mip (a wrong view, guard or binding in
+/// the tail): FSR2's auto exposure. Above, that store is compared only where
+/// one dispatch does not run the tail. Here the reference is AMD's one
+/// dispatch where its hand-off cannot change what it reads: still frames,
+/// each reset, so from the second frame mip 5 already holds what every
+/// workgroup is about to write (a reset clears mip 0 alone, and no other pass
+/// writes mip 5) and every frame's exposure starts from the reset's clear.
+/// FSR3's shading-change pyramid writes its luma pyramid's mip 5 each frame,
+/// so FSR3's tail is compared with the unchanged HLSL with its tiles
+/// serialized instead (the oracle's temporal sequences).
+#[test]
+fn fsr2_split_spd_epilogue_stores_what_one_dispatch_stores() {
+    let Some((device, queue)) =
+        device_with(required_features() | optional_features(), FfxEffect::Fsr2)
+    else {
+        return;
+    };
+    let case = Case {
+        display: [256, 144],
+        render: [256, 144],
+        fp16: true,
+        auto_exposure: true,
+        extras: false,
+        still: true,
+    };
+    let from_the_second_frame =
+        |writes: Writes| -> Writes { writes.into_iter().filter(|(key, _)| key.0 > 0).collect() };
+    let (expected, _) = fsr2(&device, &queue, case, Spd::Single);
+    let (actual, _) = fsr2(&device, &queue, case, Spd::Selected);
+    let (expected, actual) = (
+        from_the_second_frame(expected),
+        from_the_second_frame(actual),
+    );
+    assert!(expected.keys().any(|key| handed_off(&key.2)));
+    assert_same("FSR2", case, &expected, &actual, |_| true);
+}
+
 #[test]
 fn fsr2_split_spd_writes_what_one_dispatch_writes() {
     split_spd_writes_what_one_dispatch_writes(FSR2);
@@ -812,21 +876,26 @@ fn fsr3_spd_without_wave_operations_writes_what_its_wave_operations_write() {
     spd_without_wave_operations_writes_what_its_wave_operations_write(FSR3);
 }
 
-/// Defect: a reduced set failing where a pyramid's texture lacks a mip a
+/// Defect: a resource set failing where a pyramid's texture lacks a mip a
 /// pass binds (SDK-P27): below a 64-pixel maximum render size FSR2's exposure
 /// mips and FSR3's SPD mips have no mip 5. The SDK's set binds the last mip
-/// in its place; the reduced sets, whose bindings are write-only views
-/// WebGPU does not let alias, bind an inert one. wgpu rejecting either, or a
-/// job failing, panics in the run; a second run differing from the first
-/// would show a store that reached a shared texel.
+/// in its place, now in SPD's first dispatch as write-only views; the
+/// reduced sets, whose write-only views WebGPU does not let alias, bind an
+/// inert one. wgpu rejecting either, or a job failing, panics in the run; a
+/// second run differing from the first would show a store that reached a
+/// shared texel.
 #[test]
-fn reduced_resource_sets_run_below_a_64_pixel_maximum_render_size() {
+fn resource_sets_run_below_a_64_pixel_maximum_render_size() {
     for ((run, effect, name), features) in [FSR2, FSR3].into_iter().flat_map(|effect| {
-        [sdk_formats_required_features(), core_required_features()]
-            .map(|features| (effect, features))
+        [
+            required_features(),
+            sdk_formats_required_features(),
+            core_required_features(),
+        ]
+        .map(|features| (effect, features))
     }) {
         let Some((device, queue)) = device_with(features | optional_features(), effect) else {
-            return;
+            continue;
         };
         for size in [[48, 40], [24, 20]] {
             let case = Case {
@@ -835,6 +904,7 @@ fn reduced_resource_sets_run_below_a_64_pixel_maximum_render_size() {
                 fp16: true,
                 auto_exposure: true,
                 extras: false,
+                still: false,
             };
             let (first, _) = run(&device, &queue, case, Spd::Selected);
             let (second, _) = run(&device, &queue, case, Spd::Selected);
@@ -1044,6 +1114,7 @@ fn spd_stores_the_same_exposure_in_every_run((run, effect, name): Effect) {
         fp16: true,
         auto_exposure: true,
         extras: false,
+        still: false,
     };
     let (first, _) = run(&device, &queue, case, Spd::Selected);
     assert_eq!(resource_set(device.features()), FfxWgpuResourceSet::Sdk);

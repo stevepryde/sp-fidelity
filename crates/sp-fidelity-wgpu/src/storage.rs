@@ -125,7 +125,7 @@ pub(crate) fn storage_format(format: FfxSurfaceFormat) -> Option<TextureFormat> 
 
 /// The port's WGSL with every narrow storage texture declared in its core
 /// format. The declarations that change access or layout are the port's own
-/// (`FFX_WGSL_CORE`).
+/// (`FFX_WGSL_CORE_FORMATS`).
 pub(crate) fn declare(mut source: String) -> String {
     for (_, _, narrow, wide) in WIDENED {
         source = source.replace(

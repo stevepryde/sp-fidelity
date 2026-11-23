@@ -1607,7 +1607,8 @@ impl FfxWgpuBackend {
 
     /// The port's WGSL for `blob`, as this device's capabilities select it.
     /// A device with every feature of `required_features` gets the SDK's
-    /// source, unchanged.
+    /// source, unchanged but for the two dispatches of a split SPD pass
+    /// (`spd_phase`).
     fn wgsl_source(
         &self,
         effect: FfxEffect,

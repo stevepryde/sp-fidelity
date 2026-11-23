@@ -782,6 +782,12 @@ fn temporal_sequences(device: fn(bool) -> gpu::Gpu, suffix: &str) {
                     }
                 }
             }
+            if let Some(serialized) = serialized_luma_pyramid(&directory) {
+                println!("{}", serialized.summary());
+                if !serialized.accepted() {
+                    failures.push(serialized.summary());
+                }
+            }
             for d in &comparison.differences {
                 maxima
                     .entry(format!("{}:{}:{fp16}", d.stage, d.resource))
@@ -795,6 +801,82 @@ fn temporal_sequences(device: fn(bool) -> gpu::Gpu, suffix: &str) {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+/// The luma pyramid where SPD's epilogue runs (more than six mips), against
+/// the unchanged HLSL with its tiles serialized through SPD's existing
+/// workgroup offset, as frame interpolation's are: each original tile runs
+/// as its own dispatch with the original counter and workgroup count, so
+/// the last one's unchanged epilogue reads every tile's mip 5 (SDK-P14). The
+/// port's epilogue is its second dispatch. The sequence runs from the case's
+/// inputs, each pass reading what the Metal run wrote before it, so other
+/// passes carry fast-math differences (SDK-P22) and are not compared, nor
+/// are the mips below 5 of the SPD texture, which the shading-change pyramid
+/// wrote the frame before. What the pyramid reduces must be exact: mip 5 and
+/// the frame info's log and average luma. The frame info's exposure is
+/// computed from that log luma by `ComputeAutoExposureFromLavg`, whose
+/// constants DXC folds (SDK-P22; the strict one-workgroup control is exact).
+/// `None` where no frame runs the epilogue.
+fn serialized_luma_pyramid(directory: &Path) -> Option<compare::Comparison> {
+    let luma_pyramid = FfxFsr3UpscalerPass::LumaPyramid as u32;
+    let mut serialized = false;
+    let mut trace = String::new();
+    for line in fs::read_to_string(directory.join("cpp.jsonl"))
+        .unwrap()
+        .lines()
+    {
+        let event: Value = serde_json::from_str(line).unwrap();
+        if event[0] == "compute" && event[1] == luma_pyramid {
+            let cb = event[6]
+                .as_array()
+                .unwrap()
+                .iter()
+                .position(|cb| cb[0] == "cbSPD")
+                .unwrap();
+            // cbSPD: mips, numWorkGroups, workGroupOffset.xy, renderSize.xy.
+            if event[6][cb][1][0].as_u64().unwrap() > 6 {
+                assert_eq!(event[2][2], 1, "the luma pyramid is two-dimensional");
+                for y in 0..event[2][1].as_u64().unwrap() {
+                    for x in 0..event[2][0].as_u64().unwrap() {
+                        let mut tile = event.clone();
+                        tile[2] = json!([1, 1, 1]);
+                        tile[6][cb][1][2] = (event[6][cb][1][2].as_u64().unwrap() + x).into();
+                        tile[6][cb][1][3] = (event[6][cb][1][3].as_u64().unwrap() + y).into();
+                        trace += &tile.to_string();
+                        trace.push('\n');
+                    }
+                }
+                serialized = true;
+                continue;
+            }
+        }
+        trace += line;
+        trace.push('\n');
+    }
+    if !serialized {
+        return None;
+    }
+    let serial = directory.join("serialized-original");
+    gpu::link_case(directory, &serial, &["inputs", "wgpu"]);
+    fs::write(serial.join("cpp.jsonl"), trace).unwrap();
+    let luma_pyramid = FSR3UPSCALER.stages[luma_pyramid as usize];
+    let sequence = gpu::run_sequence(&serial, &FSR3UPSCALER);
+    Some(compare::compare(&sequence, FSR3UPSCALER.stages, &|d| {
+        if d.stage != luma_pyramid {
+            return Ok("SDK-P22 carried: each side reads its own earlier outputs");
+        }
+        if d.resource == "FSR3UPSCALER_SpdMips" && d.mip != 5 {
+            return Ok("SDK-P22 carried: the shading-change pyramid's mips");
+        }
+        if d.resource == "FSR3UPSCALER_FrameInfo" {
+            // FRAME_INFO_EXPOSURE is the texel's first float.
+            let floats = |side: &str| fs::read(sequence.join(side).join(&d.path)).unwrap();
+            if floats("wgpu")[4..] == floats("metal-replay")[4..] {
+                return Ok("SDK-P22: the exposure of the same log luma, with DXC's folds");
+            }
+        }
+        Err("the port's split pyramid must match the serialized original exactly".into())
+    }))
 }
 
 /// All meaningful compile keys: HDR, motion-vector resolution, jitter,

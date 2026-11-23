@@ -699,8 +699,11 @@ and `R11G11B10_FLOAT`; read-write UAVs in `R8_UNORM`, `R16_FLOAT`,
 `R16G16_FLOAT`, `R32G32_FLOAT` and `R32G32B32A32_FLOAT`;
 `InterlockedMin`/`InterlockedMax` on an `R32_UINT` UAV; and `R16_SNORM`
 lookups. WebGPU's `texture-formats-tier2` adds those storage formats and
-read-write accesses (WebGPU Editor's Draft, 21 November 2026, §25.20 and the
-format table of §26.1.1). Nothing in WebGPU adds texture atomics, and
+the read-write accesses but two (WebGPU Editor's Draft, 21 November 2026,
+§25.19, §25.20 and the format table of §26.1.1): read-write `R16G16_FLOAT`
+is SPD's mips only, which a split SPD binds write-only and read-only, and
+read-write `R32G32_FLOAT` is allocated as `Rgba32Float` on every set
+(SDK-P24). Nothing in WebGPU adds texture atomics, and
 `r16snorm` is unfilterable even with `texture-formats-tier1` (§26.1.1), so
 `required_features()` cannot be granted in a browser. wgpu's own browser
 backend maps neither tier to a wgpu feature; a browser backend that maps
@@ -797,8 +800,9 @@ the SDK-formats set to tier2.
 - `sp-fidelity-wgpu`'s `storage_tests` run FSR2 and the standalone FSR3
   upscaler for five frames (moving content, depth edges, masks; FP16 and
   FP32; the application's exposure and auto exposure; sharpening and FSR2's
-  generated reactivity; upscaling, Native AA, a one-workgroup seven-mip
-  pyramid and a six-mip pyramid) and compare what every compute job wrote,
+  generated reactivity; upscaling, Native AA, seven-mip pyramids, a
+  one-workgroup six-mip pyramid and a five-mip one) and compare what every
+  compute job wrote,
   in the SDK's layout. Where the capture's conversion to that layout rounds
   (the locks and the 11/11/10 colours), it first asserts the texel is already
   exactly a value of the SDK's format. Each reduced set (the SDK-formats set
@@ -817,12 +821,24 @@ the SDK-formats set to tier2.
   dispatch reads mip 5 while other workgroups write it, and on this adapter
   its value differs between runs. In the one-workgroup case, where no other
   workgroup writes what the reduction reads, every write is identical with
-  auto exposure on, that store included: the second dispatch stores what the
-  SDK's one dispatch stores.
+  auto exposure on, that store included; it has six mips, so there SPD stores
+  that mip in its first dispatch and runs no second.
+- The second dispatch, where it stores the 1×1 mip, against AMD's one
+  dispatch where its hand-off cannot change what it reads. FSR2
+  (`fsr2_split_spd_epilogue_stores_what_one_dispatch_stores`, 256×144,
+  eight mips): the same unjittered frame, reset every frame, so from the
+  second frame mip 5 already holds what each workgroup is about to write (a
+  reset clears mip 0 alone) and each exposure starts from the reset's clear;
+  every write of the second to fifth frames identical, the exposure
+  included. Moving the second dispatch's mip-5 reads one texel fails it (32
+  of 124 writes differ) while every other SPD test above passes. FSR3's
+  shading-change pyramid rewrites the luma pyramid's mip 5 every frame, so
+  FSR3's is checked in the pass oracle against the unchanged HLSL with its
+  tiles serialized (below).
 - SPD without wave operations against SPD with them, as the backend
   schedules each: the pyramids' mips and the 1×1 store identical in all five
   cases, FSR2 and FSR3.
-- Below a 64-pixel maximum render size (48×40 and 24×20) both reduced sets
+- Below a 64-pixel maximum render size (48×40 and 24×20) all three sets
   run FSR2 and FSR3 with no job or wgpu error, twice with the same writes;
   SGL's browser smoke rendered through both sets at 56×44 in Chromium 149
   with no WebGPU error.
@@ -836,9 +852,18 @@ the SDK-formats set to tier2.
   exceptions recorded above on every set, 82 of them SDK-P22 and 10 the
   frame info, where the unchanged HLSL's one dispatch races (SDK-P14): its
   maxima differ between runs while the port's split pyramid stores the same
-  value in every run. FSR2's single-pass oracle tests allocate their own
-  SDK-format textures and were not run on the reduced sets: FSR2's evidence
-  is the equality with the SDK set above.
+  value in every run. Where the luma pyramid runs its epilogue (the 129×73
+  case), the sequence is run again from its inputs with the original's tiles
+  serialized through SPD's workgroup offset, as frame interpolation's are,
+  so its unchanged epilogue reads every tile's mip 5: on every set, in FP32
+  and FP16, mip 5 and the frame info's log and average luma equal the
+  port's in all six frames, and its exposure, computed from that log luma
+  with DXC's folded constants (SDK-P22, the strict one-workgroup control),
+  differs by one ulp in two frames. Moving the port's second-dispatch mip-5
+  reads one texel moves the frame info by up to 0.12 and fails it. FSR2's
+  single-pass oracle tests allocate their own SDK-format textures and were
+  not run on the reduced sets: FSR2's evidence is the equality with the SDK
+  set above.
 - The host oracle is the same on every set: the substitution is beneath the
   `FfxInterface`, which sees the SDK's descriptions.
 - Every FSR2 and FSR3 upscaler module of each reduced set (486 distinct a
@@ -870,7 +895,10 @@ the three sets; the two transfer passes are in no job's timestamp pair.
 Spreading a job's pair over them was tried and withdrawn: with it Chromium
 149 rendered FSR's frames black whenever timestamps were written.
 
-**Limits.** Frame generation and optical flow keep the SDK's set. A pass
+**Limits.** Frame generation and optical flow keep the SDK's set. Like the
+SDK's set, the SDK-formats set takes `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`
+to grant the SDK's storage formats and accesses; on a native adapter whose
+formats fall short, wgpu rejects the pass and the job fails (SDK-P28). A pass
 binds up to six storage textures (`storage_textures_per_stage`), above
 WebGPU's default limit of four. The reduced sets never use subgroups,
 whatever the device has, so they read no lookup: a browser's compiler
@@ -924,8 +952,10 @@ epilogue dispatches wherever the epilogue runs (more than six mips), on
 every resource set. `fsr2_spd_stores_the_same_exposure_in_every_run` and
 its FSR3 counterpart in `sp-fidelity-wgpu` require four runs of those frames
 to store the same values; on one dispatch both failed in each of two runs.
-Where nothing races, the split writes what the one dispatch writes (SDK-P38's
-evidence). At 1920×1080 on Apple M5 FSR2's luminance pyramid went from
+The split's second dispatch stores what AMD's one dispatch stores where
+its hand-off cannot race: FSR2's against the port's one dispatch on frames
+whose mip 5 already holds what the tiles write, FSR3's against the
+unchanged HLSL with serialized tiles (SDK-P38's evidence). At 1920×1080 on Apple M5 FSR2's luminance pyramid went from
 0.101–0.104 ms to 0.110–0.112 ms and FSR3's luma pyramid from 0.077 ms to
 0.078–0.079 ms. FSR3's shading-change pyramid stores nothing above mip 5,
 so on the SDK's set it keeps AMD's one dispatch.
