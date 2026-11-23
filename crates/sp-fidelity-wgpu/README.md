@@ -141,7 +141,7 @@ backend's `presentation` module and configuration callback. It forwards
 `sp-fidelity/frame-generation`; upscaling needs neither feature.
 
 ```toml
-sp-fidelity-wgpu = { version = "0.3.3", features = ["frame-generation"] }
+sp-fidelity-wgpu = { version = "0.3.4", features = ["frame-generation"] }
 ```
 
 Contributor examples:

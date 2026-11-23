@@ -51,13 +51,20 @@ Add the crates.io dependencies:
 
 ```toml
 [dependencies]
-sp-fidelity = "0.3.3"
-sp-fidelity-wgpu = "0.3.3"
+sp-fidelity = "0.3.4"
+sp-fidelity-wgpu = "0.3.4"
 wgpu = "30.0.1"
 ```
 
-0.3.3 adds the standalone reflections denoiser. Existing FSR integrations
-need no code changes.
+0.3.4 runs FSR2 and the FSR3 upscaler on devices without texture atomics, a
+browser's WebGPU among them: request
+`sp_fidelity_wgpu::features_for(adapter.features())` instead of
+`required_features()`. The backend keeps the SDK's storage formats where the
+device has `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES` and takes WebGPU's core
+formats where it does not (`FfxWgpuResourceSet`, CONFORMANCE.md SDK-P38).
+FSR2's luminance pyramid and FSR3's luma pyramid now run SPD as two
+dispatches, so their auto exposure no longer varies between runs (SDK-P14).
+Existing integrations need no code changes.
 
 The `denoiser` module accepts caller-traced reflection samples. AMD's SSSR uses
 this same component after ray intersection. Applications with their own ray
