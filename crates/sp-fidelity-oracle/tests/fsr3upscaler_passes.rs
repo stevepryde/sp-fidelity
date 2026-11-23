@@ -21,12 +21,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use support::{Case, Op, RenderSize};
 
+/// An application texture. One the effect writes is allocated as the
+/// backend's passes declare it: on the core resource set (`core`) a narrow
+/// format is its RGBA one and the previous depth takes no atomics.
 fn texture(
     device: &wgpu::Device,
     size: (u32, u32),
     format: wgpu::TextureFormat,
     writable: bool,
+    core: bool,
 ) -> wgpu::Texture {
+    let format = match format {
+        wgpu::TextureFormat::Rg16Float if writable && core => wgpu::TextureFormat::Rgba16Float,
+        wgpu::TextureFormat::R8Unorm if writable && core => wgpu::TextureFormat::Rgba8Unorm,
+        format => format,
+    };
     device.create_texture(&wgpu::TextureDescriptor {
         label: None,
         size: wgpu::Extent3d {
@@ -43,7 +52,7 @@ fn texture(
             | wgpu::TextureUsages::COPY_DST
             | if writable {
                 wgpu::TextureUsages::STORAGE_BINDING
-                    | if format == wgpu::TextureFormat::R32Uint {
+                    | if format == wgpu::TextureFormat::R32Uint && !core {
                         wgpu::TextureUsages::STORAGE_ATOMIC
                     } else {
                         wgpu::TextureUsages::empty()
@@ -222,8 +231,17 @@ impl Application {
             inputs: resources
                 .into_iter()
                 .map(|(name, size, format, native_format, bytes, writable)| {
-                    let texture = texture(&gpu.device, size, native_format, writable);
-                    gpu::upload(&gpu.queue, &texture, &bytes);
+                    let texture =
+                        texture(&gpu.device, size, native_format, writable, gpu.is_core());
+                    gpu::upload(
+                        &gpu.queue,
+                        &texture,
+                        &sp_fidelity_wgpu::ffx_texels_from_sdk_wgpu(
+                            format,
+                            texture.format(),
+                            &bytes,
+                        ),
+                    );
                     Input {
                         name,
                         texture,
@@ -368,9 +386,16 @@ fn run_case(
         let command_list = backend
             .borrow_mut()
             .ffx_get_command_list_wgpu(gpu.device.create_command_encoder(&Default::default()));
+        // The SDK's description of each, which a core-set allocation's own
+        // format differs from.
         let resource = |name: &str, write| {
-            backend.borrow_mut().ffx_get_resource_wgpu(
-                &application.input(name).texture,
+            let input = application.input(name);
+            backend.borrow_mut().ffx_get_described_resource_wgpu(
+                &input.texture,
+                FfxResourceDescription {
+                    format: input.format,
+                    ..sp_fidelity_wgpu::ffx_get_resource_description_wgpu(&input.texture)
+                },
                 name,
                 if write {
                     FFX_RESOURCE_STATE_UNORDERED_ACCESS
@@ -672,10 +697,24 @@ fn aligned_accumulate(directory: &Path, selected: FfxFsr3UpscalerPass) -> compar
 #[test]
 #[ignore = "needs Metal, clang++ and compiled FSR 3.1 shader variants"]
 fn all_passes_match_the_unchanged_hlsl_over_temporal_sequences() {
+    temporal_sequences(|fp16| gpu::Gpu::new(fp16, None), "");
+}
+
+/// The same sequences on a device with only the core resource set's
+/// features, as a browser's has: the backend's core formats, buffer atomics
+/// and two-dispatch SPD against the unchanged HLSL, each dump in the SDK's
+/// layout.
+#[test]
+#[ignore = "needs Metal, clang++ and compiled FSR 3.1 shader variants"]
+fn all_passes_match_the_unchanged_hlsl_over_temporal_sequences_on_the_core_resource_set() {
+    temporal_sequences(gpu::Gpu::core, "-core");
+}
+
+fn temporal_sequences(device: fn(bool) -> gpu::Gpu, suffix: &str) {
     let mut maxima = BTreeMap::<String, f64>::new();
     let mut failures = Vec::new();
     for fp16 in [false, true] {
-        let gpu = gpu::Gpu::new(fp16, None);
+        let gpu = device(fp16);
         for (name, flags, render, display) in [
             (
                 "one-group",
@@ -702,7 +741,7 @@ fn all_passes_match_the_unchanged_hlsl_over_temporal_sequences() {
         ] {
             let (comparison, directory) = run_case(
                 &gpu,
-                &format!("fsr3upscaler-{name}-fp16-{fp16}"),
+                &format!("fsr3upscaler-{name}-fp16-{fp16}{suffix}"),
                 flags,
                 false,
                 render,

@@ -34,7 +34,10 @@
 //! before recording its new views or bind group when
 //! wgpu rejects one, stopping the jobs after it (SDK-P28: wgpu would
 //! invalidate the caller's whole encoder; see
-//! [`FfxWgpuBackend::take_job_error`]). Nothing else differs from the SDK.
+//! [`FfxWgpuBackend::take_job_error`]), and the core resource set of FSR2 and
+//! the FSR3 upscaler on a device without the SDK's storage formats and
+//! texture atomics, a browser's among them (SDK-P38, `storage.rs`). Nothing
+//! else differs from the SDK.
 use sp_fidelity::blob_accessors::ffx_get_permutation_blob_by_index;
 use sp_fidelity::error::*;
 #[cfg(feature = "frame-generation")]
@@ -57,9 +60,17 @@ mod outgoing_tests;
 pub mod presentation;
 pub mod readback;
 mod reflections;
+mod storage;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod storage_tests;
 
-/// The wgpu features needed for FSR upscaling and frame generation. The
-/// reflections denoiser runs with core WebGPU features. [`optional_features`] adds the FP16 permutations.
+pub use storage::{ffx_sdk_texels_wgpu, ffx_texels_from_sdk_wgpu};
+
+/// The wgpu features with which FSR upscaling and frame generation run as
+/// the SDK allocates and dispatches them. FSR2 and FSR3 upscaling also run
+/// with [`core_required_features`] alone, on the core resource set
+/// ([`features_for`]). The reflections denoiser runs with core WebGPU
+/// features. [`optional_features`] adds the FP16 permutations.
 ///
 /// Derived from the FSR2 WGSL (`fsr2/ffx_fsr2_callbacks.wgsl`) and the
 /// resources `ffx_fsr2.cpp` creates:
@@ -77,11 +88,106 @@ mod reflections;
 /// - `FLOAT32_FILTERABLE`: linear sampling of 32-bit float application inputs
 ///   (`SampleInputColor`).
 pub fn required_features() -> wgpu::Features {
-    wgpu::Features::SUBGROUP
-        | wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
+    wgpu::Features::SUBGROUP | sdk_storage_features() | core_required_features()
+}
+
+/// The features FSR2 and FSR3 upscaling need on any device:
+/// `FLOAT32_FILTERABLE`, as in [`required_features`]. With no more than
+/// these, which a browser's WebGPU can grant, the backend runs them on the
+/// core resource set: storage textures in WebGPU's core formats and accesses,
+/// atomics in a storage buffer, and SPD without wave operations in two
+/// dispatches (README, "Resource sets"). Frame generation needs
+/// [`required_features`].
+pub fn core_required_features() -> wgpu::Features {
+    wgpu::Features::FLOAT32_FILTERABLE
+}
+
+/// The features to request for FSR2 and FSR3 upscaling from an adapter with
+/// `available`: [`required_features`] where it has them all, so the SDK's
+/// resource set runs; otherwise [`core_required_features`]; `None` where it
+/// lacks those too. Add [`optional_features`] the adapter has.
+pub fn features_for(available: wgpu::Features) -> Option<wgpu::Features> {
+    [required_features(), core_required_features()]
+        .into_iter()
+        .find(|features| available.contains(*features))
+}
+
+/// The most storage textures one pass of `effect` binds, on either resource
+/// set: 5 for FSR2 (accumulate) and 6 for the FSR3 upscaler (the
+/// shading-change pyramid's mips). A device needs at least this
+/// `max_storage_textures_per_shader_stage`, where WebGPU's default is 4.
+/// Zero for an effect this does not cover.
+pub fn storage_textures_per_stage(effect: FfxEffect) -> u32 {
+    match effect {
+        FfxEffect::Fsr2 => 5,
+        FfxEffect::Fsr3Upscaler => 6,
+        _ => 0,
+    }
+}
+
+/// The features of the SDK's storage formats and texture atomics. A device
+/// with all of them gets the SDK's resource set; any other, the core set.
+fn sdk_storage_features() -> wgpu::Features {
+    wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
         | wgpu::Features::TEXTURE_ATOMIC
         | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
-        | wgpu::Features::FLOAT32_FILTERABLE
+}
+
+/// What the device lets FSR2 and FSR3 use, each from its own features, as
+/// `fp16Supported` is from `SHADER_F16`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Capabilities {
+    /// The SDK's storage formats, read-write accesses and texture atomics;
+    /// otherwise the core resource set (`storage`).
+    sdk_storage: bool,
+    /// Subgroups, for SPD's wave operations; otherwise the SDK's
+    /// `FFX_SPD_NO_WAVE_OPERATIONS`.
+    wave_operations: bool,
+    /// An upscaler's SPD pass runs as two dispatches (`upscaler_spd`): on
+    /// the core resource set, whose mips cannot be bound read-write.
+    split_spd: bool,
+}
+
+impl Capabilities {
+    fn of(features: wgpu::Features) -> Self {
+        let sdk_storage = features.contains(sdk_storage_features());
+        Self {
+            sdk_storage,
+            wave_operations: features.contains(wgpu::Features::SUBGROUP),
+            split_spd: !sdk_storage,
+        }
+    }
+
+    /// The port's WGSL options for `effect`'s passes: FSR2's and FSR3's
+    /// follow the device; every other effect keeps the SDK's source.
+    fn wgsl(self, effect: FfxEffect) -> FfxWgslUpscalerOptions {
+        if !matches!(effect, FfxEffect::Fsr2 | FfxEffect::Fsr3Upscaler) {
+            return FfxWgslUpscalerOptions::default();
+        }
+        FfxWgslUpscalerOptions {
+            core: !self.sdk_storage,
+            no_wave_operations: !self.wave_operations,
+            spd_phase: None,
+        }
+    }
+}
+
+/// Whether `pass` of `effect` is an SPD pass, and whether the reduction above
+/// mip 5 stores anything: FSR2's luminance pyramid and FSR3's luma pyramid
+/// accumulate the exposure at the 1x1 mip (`SpdStore`); FSR3's shading-change
+/// pyramid stores mips 0 to 5 only (`StorePyramid`), so its tail has nothing
+/// to write.
+fn upscaler_spd(effect: FfxEffect, pass: FfxPass) -> Option<bool> {
+    use sp_fidelity::fsr2::FfxFsr2Pass;
+    use sp_fidelity::fsr3upscaler::FfxFsr3UpscalerPass;
+    match effect {
+        FfxEffect::Fsr2 if pass == FfxFsr2Pass::ComputeLuminancePyramid as u32 => Some(true),
+        FfxEffect::Fsr3Upscaler if pass == FfxFsr3UpscalerPass::LumaPyramid as u32 => Some(true),
+        FfxEffect::Fsr3Upscaler if pass == FfxFsr3UpscalerPass::ShadingChangePyramid as u32 => {
+            Some(false)
+        }
+        _ => None,
+    }
 }
 
 /// Optional features: with `SHADER_F16` the backend reports `fp16Supported`,
@@ -259,6 +365,7 @@ struct EffectContext {
 pub struct FfxWgpuBackend {
     device: wgpu::Device,
     fp16: bool,
+    capabilities: Capabilities,
     reflections: reflections::Formats,
     /// By `FfxResourceInternal::internalIndex`; index 0 is the null resource.
     resources: Vec<Option<Resource>>,
@@ -275,7 +382,11 @@ pub struct FfxWgpuBackend {
     /// By `FfxCommandList - 1`.
     command_lists: Vec<Option<wgpu::CommandEncoder>>,
     grid: dispatch_grid::DispatchGrid,
-    clears: HashMap<wgpu::TextureFormat, wgpu::ComputePipeline>,
+    /// By format and the texels a component takes (`storage::Allocation`).
+    clears: HashMap<(wgpu::TextureFormat, u32), wgpu::ComputePipeline>,
+    /// The second dispatch of a split SPD pass (`upscaler_spd`), by the
+    /// pass's `FfxPipelineState::pipeline`: an index into `pipelines`.
+    spd_tails: HashMap<usize, usize>,
     texture_buffers: Vec<TextureBuffer>,
     #[cfg(feature = "frame-generation")]
     output_variants: HashMap<(usize, wgpu::TextureFormat), usize>,
@@ -423,6 +534,7 @@ impl FfxWgpuBackend {
             device: device.clone(),
             reflections: reflections::Formats::default(),
             fp16: device.features().contains(wgpu::Features::SHADER_F16),
+            capabilities: Capabilities::of(device.features()),
             resources: vec![None],
             free_dynamic: Vec::new(),
             handles: HashMap::new(),
@@ -434,6 +546,7 @@ impl FfxWgpuBackend {
             command_lists: Vec::new(),
             grid: dispatch_grid::DispatchGrid::new(device),
             clears: HashMap::new(),
+            spd_tails: HashMap::new(),
             texture_buffers: Vec::new(),
             #[cfg(feature = "frame-generation")]
             output_variants: HashMap::new(),
@@ -507,6 +620,41 @@ impl FfxWgpuBackend {
         state: FfxResourceStates,
     ) -> FfxResource {
         let description = ffx_get_resource_description_wgpu(texture);
+        self.external_resource(Object::Texture(texture.clone()), description, name, state)
+    }
+
+    /// A texture for a resource the SDK describes and the caller owns
+    /// (FSR3's `ffxFsr3UpscalerGetSharedResourceDescriptions`), allocated as
+    /// this backend allocates `effect`'s own: in the SDK's format where the
+    /// device has it and in the core resource set's otherwise, with the
+    /// usages its passes need. Register it each frame with
+    /// [`Self::ffx_get_described_resource_wgpu`]. The description's initial
+    /// data is not uploaded.
+    pub fn ffx_create_texture_wgpu(
+        &self,
+        effect: FfxEffect,
+        description: &FfxCreateResourceDescription<'_>,
+    ) -> Result<wgpu::Texture, FfxErrorCode> {
+        if description.resource_description.r#type == FfxResourceType::Buffer {
+            return Err(FFX_ERROR_INVALID_ARGUMENT);
+        }
+        match self.allocate(Some(effect), description)?.0 {
+            Object::Texture(texture) => Ok(texture),
+            Object::Buffer(_) => Err(FFX_ERROR_INVALID_ARGUMENT),
+        }
+    }
+
+    /// As [`Self::ffx_get_resource_wgpu`], for a texture of
+    /// [`Self::ffx_create_texture_wgpu`]: the resource keeps the SDK's
+    /// `description`, which the texture's own format and size can differ
+    /// from on the core resource set.
+    pub fn ffx_get_described_resource_wgpu(
+        &mut self,
+        texture: &wgpu::Texture,
+        description: FfxResourceDescription,
+        name: &str,
+        state: FfxResourceStates,
+    ) -> FfxResource {
         self.external_resource(Object::Texture(texture.clone()), description, name, state)
     }
 
@@ -669,20 +817,25 @@ impl FfxWgpuBackend {
             .ok_or(FFX_ERROR_INVALID_ARGUMENT)
     }
 
+    /// The clear of a texture of `format`. With `columns` above one, each
+    /// texel of the SDK's description is that many texels side by side, a
+    /// component each (`storage::Allocation`), and takes the colour's.
     fn clear_pipeline(
         &mut self,
         format: wgpu::TextureFormat,
+        columns: u32,
     ) -> Result<wgpu::ComputePipeline, FfxErrorCode> {
-        if let Some(pipeline) = self.clears.get(&format) {
+        if let Some(pipeline) = self.clears.get(&(format, columns)) {
             return Ok(pipeline.clone());
         }
         let storage = storage_format_name(format).ok_or(FFX_ERROR_INVALID_ARGUMENT)?;
         let value = match format {
             wgpu::TextureFormat::R32Uint | wgpu::TextureFormat::R8Uint => {
-                "bitcast<vec4<u32>>(color)"
+                "bitcast<vec4<u32>>(color)".to_owned()
             }
-            wgpu::TextureFormat::Rg16Sint => "bitcast<vec4<i32>>(color)",
-            _ => "color",
+            wgpu::TextureFormat::Rg16Sint => "bitcast<vec4<i32>>(color)".to_owned(),
+            _ if columns > 1 => format!("vec4<f32>(color[id.x % {columns}u])"),
+            _ => "color".to_owned(),
         };
         let module = self
             .device
@@ -710,7 +863,7 @@ impl FfxWgpuBackend {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 cache: None,
             });
-        self.clears.insert(format, pipeline.clone());
+        self.clears.insert((format, columns), pipeline.clone());
         Ok(pipeline)
     }
 
@@ -741,7 +894,10 @@ impl FfxWgpuBackend {
         {
             return Err(FFX_ERROR_INVALID_ARGUMENT.into());
         }
-        let pipeline = self.clear_pipeline(texture.format())?;
+        // A texture wider than its description holds a component a texel.
+        let described = self.resource(clear.target)?.handle.description.width.max(1);
+        let columns = (texture.width() / described).clamp(1, 4);
+        let pipeline = self.clear_pipeline(texture.format(), columns)?;
         let scopes = CreationScopes::push(&self.device);
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2),
@@ -1125,19 +1281,28 @@ impl FfxWgpuBackend {
         };
         let state = &job.pipeline;
         let bindings = self.job_bindings(pipeline, job)?;
-        let group = {
-            let mut groups = pipeline.groups.borrow_mut();
-            if let Some(index) = groups.iter().position(|(bound, _)| *bound == bindings) {
-                let kept = groups.remove(index);
-                groups.insert(0, kept);
-            } else {
-                let scopes = CreationScopes::push(&self.device);
-                let group = self.bind_group(pipeline, &state.name, &bindings)?;
-                scopes.check()?;
-                groups.insert(0, (bindings, group));
-                groups.truncate(KEPT_GROUPS);
+        let group = self.kept_group(pipeline, &state.name, bindings)?;
+        // A split SPD pass's second dispatch (`spd_tail_pipeline`), where the
+        // job reduces beyond mip 5: SPD does nothing above it otherwise
+        // (`SpdDownsample`, `mips <= 6`).
+        let tail = match self.spd_tails.get(&job.pipeline.pipeline) {
+            Some(index)
+                if state
+                    .constant_buffer_bindings
+                    .iter()
+                    .zip(&job.cbs)
+                    .any(|(binding, cb)| binding.name == "cbSPD" && cb.data[0] > 6) =>
+            {
+                let tail = self.pipelines[*index]
+                    .as_ref()
+                    .ok_or(FFX_ERROR_INVALID_ARGUMENT)?;
+                let bindings = self.job_bindings(tail, job)?;
+                Some((
+                    &tail.pipeline,
+                    self.kept_group(tail, "FidelityFX SPD tail", bindings)?,
+                ))
             }
-            groups[0].1.clone()
+            _ => None,
         };
         for binding in &state.constant_buffer_bindings {
             let wgsl = FFX_WGSL_BINDING_OFFSET_CBV + binding.slot_index;
@@ -1180,7 +1345,7 @@ impl FfxWgpuBackend {
                     .any(|(binding, cb)| binding.name == "cbInpaintingPyramid" && cb.data[0] > 6)
             });
             let mut timestamps = self.timestamp_writes();
-            let epilogue_timestamps = if epilogue.is_some() {
+            let epilogue_timestamps = if epilogue.is_some() || tail.is_some() {
                 timestamps
                     .as_mut()
                     .map(|writes| wgpu::ComputePassTimestampWrites {
@@ -1210,6 +1375,16 @@ impl FfxWgpuBackend {
                 });
                 pass.set_pipeline(epilogue);
                 pass.set_bind_group(0, &group, &[]);
+                pass.dispatch_workgroups(1, 1, z);
+            } else if let Some((tail, group)) = &tail {
+                // The tiles' writes are complete before the one workgroup
+                // that reduces them begins, as in the epilogue above.
+                let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                    label: Some("FidelityFX SPD tail"),
+                    timestamp_writes: epilogue_timestamps,
+                });
+                pass.set_pipeline(tail);
+                pass.set_bind_group(0, group, &[]);
                 pass.dispatch_workgroups(1, 1, z);
             }
         }
@@ -1320,6 +1495,188 @@ impl FfxWgpuBackend {
         self.output_variants
             .insert((job.pipeline.pipeline, format), index);
         Ok(())
+    }
+
+    /// The wgpu object of a resource `effect` creates, and its size in bytes.
+    fn allocate(
+        &self,
+        effect: Option<FfxEffect>,
+        d: &FfxCreateResourceDescription,
+    ) -> Result<(Object, u64), FfxErrorCode> {
+        let description = d.resource_description;
+        let widen_spd = effect == Some(FfxEffect::Fsr3Upscaler)
+            && d.id == sp_fidelity::fsr3upscaler::resources::FFX_FSR3UPSCALER_RESOURCE_IDENTIFIER_SPD_MIPS;
+        let mut allocation = *d;
+        // Optical flow's optional 1D allocations still have Texture2D HLSL
+        // bindings (ffx_opticalflow_callbacks_hlsl.h:209,250-265). wgpu
+        // requires matching dimensions; retain the SDK description above.
+        if effect == Some(FfxEffect::OpticalFlow)
+            && description.r#type == FfxResourceType::Texture1D
+        {
+            allocation.resource_description.r#type = FfxResourceType::Texture2D;
+        }
+        // The core resource set of an upscaler on a device without the SDK's
+        // storage formats.
+        let core = effect
+            .filter(|effect| {
+                !self.capabilities.sdk_storage
+                    && matches!(effect, FfxEffect::Fsr2 | FfxEffect::Fsr3Upscaler)
+                    && description.r#type != FfxResourceType::Buffer
+            })
+            .and_then(|effect| storage::allocation(effect, d));
+        if let Some(core) = core {
+            allocation.resource_description.width *= core.columns;
+        }
+        create_object(
+            &self.device,
+            &allocation,
+            if effect == Some(FfxEffect::Denoiser) {
+                self.reflections.storage_override(&description)
+            } else if let Some(core) = core {
+                Some(core.format)
+            } else {
+                widen_spd.then_some(wgpu::TextureFormat::Rgba16Float)
+            },
+            self.capabilities.sdk_storage,
+        )
+    }
+
+    /// The port's WGSL for `blob`, as this device's capabilities select it.
+    /// A device with every feature of `required_features` gets the SDK's
+    /// source, unchanged.
+    fn wgsl_source(
+        &self,
+        effect: FfxEffect,
+        blob: &FfxShaderBlob,
+        spd_phase: Option<FfxWgslSpdPhase>,
+    ) -> Result<String, FfxErrorCode> {
+        let options = FfxWgslUpscalerOptions {
+            spd_phase,
+            ..self.capabilities.wgsl(effect)
+        };
+        let source = if effect == FfxEffect::Denoiser {
+            self.reflections.shader(blob, self.device.features())
+        } else if options == FfxWgslUpscalerOptions::default() {
+            ffx_get_wgsl_source(blob)
+        } else {
+            ffx_get_upscaler_wgsl_source(blob, options)
+        }
+        .ok_or(FFX_ERROR_BACKEND_API_ERROR)?;
+        Ok(if options.core {
+            storage::declare(source)
+        } else if effect == FfxEffect::Fsr3Upscaler {
+            // Metal cannot read and write `Rg16Float` in one pass; the SPD
+            // mips are allocated as `Rgba16Float` (`create_resource`). A
+            // split SPD pass binds them write-only and read-only, and they
+            // are its only `Rg16Float` UAVs.
+            let access = if spd_phase.is_some() {
+                ""
+            } else {
+                " read_write>"
+            };
+            source.replace(
+                &format!("texture_storage_2d<rg16float,{access}"),
+                &format!("texture_storage_2d<rgba16float,{access}"),
+            )
+        } else {
+            source
+        })
+    }
+
+    /// The second dispatch of the split SPD pass `tiles` was created for
+    /// (`upscaler_spd`): the same blob assembled as SPD's tail, where the
+    /// mip the tiles wrote is read-only. It binds what the pass's jobs bind,
+    /// through its own layout, and shares the pass's constant buffers, which
+    /// each job fills before its first dispatch.
+    fn spd_tail_pipeline(
+        &self,
+        blob: &FfxShaderBlob,
+        tiles: &Pipeline,
+        description: &FfxPipelineDescription<'_>,
+    ) -> Result<Pipeline, FfxErrorCode> {
+        let source = self.wgsl_source(tiles.effect, blob, Some(FfxWgslSpdPhase::Tail))?;
+        let reflection = Reflection::new(&source)?;
+        let entries = tiles
+            .entries
+            .iter()
+            .map(|(binding, entry)| {
+                let mut entry = *entry;
+                entry.ty = reflection.binding(*binding)?.0;
+                Ok((*binding, entry))
+            })
+            .collect::<Result<HashMap<_, _>, FfxErrorCode>>()?;
+        let mut layout_entries: Vec<_> = entries.values().copied().collect();
+        layout_entries.sort_by_key(|entry| entry.binding);
+        let label = Some("FidelityFX SPD tail");
+        let layout = self
+            .device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label,
+                entries: &layout_entries,
+            });
+        let pipeline_layout = self
+            .device
+            .create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label,
+                bind_group_layouts: &[Some(&layout)],
+                immediate_size: 0,
+            });
+        let module = self
+            .device
+            .create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(description.name.as_str()),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
+        let pipeline = self
+            .device
+            .create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label,
+                layout: Some(&pipeline_layout),
+                module: &module,
+                entry_point: Some(FFX_WGSL_ENTRY_POINT),
+                compilation_options: Default::default(),
+                cache: None,
+            });
+        Ok(Pipeline {
+            effect_context_id: tiles.effect_context_id,
+            effect: tiles.effect,
+            pass: tiles.pass,
+            pipeline,
+            #[cfg(feature = "frame-generation")]
+            output_source: None,
+            #[cfg(feature = "frame-generation")]
+            spd_epilogue: None,
+            layout,
+            entries,
+            constant_sizes: tiles.constant_sizes.clone(),
+            constants: tiles.constants.clone(),
+            samplers: tiles.samplers.clone(),
+            grid_group: None,
+            groups: RefCell::new(Vec::new()),
+        })
+    }
+
+    /// A group of `pipeline` for `bindings`: the one it kept from an earlier
+    /// job that bound the same resources, or a new one, checked before it is
+    /// recorded (SDK-P28).
+    fn kept_group(
+        &self,
+        pipeline: &Pipeline,
+        label: &str,
+        bindings: Vec<JobBinding>,
+    ) -> Result<wgpu::BindGroup, JobFailure> {
+        let mut groups = pipeline.groups.borrow_mut();
+        if let Some(index) = groups.iter().position(|(bound, _)| *bound == bindings) {
+            let kept = groups.remove(index);
+            groups.insert(0, kept);
+        } else {
+            let scopes = CreationScopes::push(&self.device);
+            let group = self.bind_group(pipeline, label, &bindings)?;
+            scopes.check()?;
+            groups.insert(0, (bindings, group));
+            groups.truncate(KEPT_GROUPS);
+        }
+        Ok(groups[0].1.clone())
     }
 
     fn texture_binding_object(
@@ -1783,8 +2140,20 @@ impl FfxInterface for FfxWgpuBackend {
             // SDK-P6: wgpu cannot force a subgroup size, so do not report the
             // SM6.6 with which the SDK selects wave64 permutations.
             maximum_supported_shader_model: FfxShaderModel::ShaderModel6_2,
-            wave_lane_count_min: info.subgroup_min_size,
-            wave_lane_count_max: info.subgroup_max_size,
+            // A device without subgroups has no wave operations and so no
+            // wave lanes, whatever its adapter reports (a browser's reports
+            // the widest range allowed): the SDK then takes the permutations
+            // of hardware without 64-wide waves, which sample no Lanczos LUT.
+            wave_lane_count_min: if self.capabilities.wave_operations {
+                info.subgroup_min_size
+            } else {
+                0
+            },
+            wave_lane_count_max: if self.capabilities.wave_operations {
+                info.subgroup_max_size
+            } else {
+                0
+            },
             fp16_supported: self.fp16,
             ..Default::default()
         })
@@ -1828,26 +2197,7 @@ impl FfxInterface for FfxWgpuBackend {
             .get(effect_context_id as usize)
             .and_then(Option::as_ref)
             .map(|context| context.effect);
-        let widen_spd = effect == Some(FfxEffect::Fsr3Upscaler)
-            && d.id == sp_fidelity::fsr3upscaler::resources::FFX_FSR3UPSCALER_RESOURCE_IDENTIFIER_SPD_MIPS;
-        let mut allocation = *d;
-        // Optical flow's optional 1D allocations still have Texture2D HLSL
-        // bindings (ffx_opticalflow_callbacks_hlsl.h:209,250-265). wgpu
-        // requires matching dimensions; retain the SDK description above.
-        if effect == Some(FfxEffect::OpticalFlow)
-            && description.r#type == FfxResourceType::Texture1D
-        {
-            allocation.resource_description.r#type = FfxResourceType::Texture2D;
-        }
-        let (object, bytes) = create_object(
-            &self.device,
-            &allocation,
-            if effect == Some(FfxEffect::Denoiser) {
-                self.reflections.storage_override(&description)
-            } else {
-                widen_spd.then_some(wgpu::TextureFormat::Rgba16Float)
-            },
-        )?;
+        let (object, bytes) = self.allocate(effect, d)?;
         let handle = Handle {
             object,
             description,
@@ -1881,22 +2231,8 @@ impl FfxInterface for FfxWgpuBackend {
                 (contents, None)
             }
             Object::Texture(texture) => {
-                // An R32G32_FLOAT UAV's texels gain zero .zw (`storage_texture_format`).
-                let data = if texture.format() == wgpu::TextureFormat::Rgba32Float
-                    && description.format == FfxSurfaceFormat::R32G32Float
-                {
-                    data.chunks(8)
-                        .flat_map(|texel| texel.iter().copied().chain([0; 8]))
-                        .collect()
-                } else if texture.format() == wgpu::TextureFormat::Rgba16Float
-                    && description.format == FfxSurfaceFormat::R16G16Float
-                {
-                    data.chunks(4)
-                        .flat_map(|texel| texel.iter().copied().chain([0; 4]))
-                        .collect()
-                } else {
-                    data
-                };
+                let data =
+                    storage::ffx_texels_from_sdk_wgpu(description.format, texture.format(), &data);
                 let block = texture.format().block_copy_size(None).unwrap_or(0);
                 let row = (texture.width() * block) as usize;
                 let pitch =
@@ -2081,20 +2417,14 @@ impl FfxInterface for FfxWgpuBackend {
             // SDK-P6: not selected, because the backend reports SM6.2.
             return Err(FFX_ERROR_BACKEND_API_ERROR);
         }
-        let source = if effect == FfxEffect::Denoiser {
-            self.reflections.shader(&blob, self.device.features())
-        } else {
-            ffx_get_wgsl_source(&blob)
-        }
-        .ok_or(FFX_ERROR_BACKEND_API_ERROR)?;
-        let source = if effect == FfxEffect::Fsr3Upscaler {
-            source.replace(
-                "texture_storage_2d<rg16float, read_write>",
-                "texture_storage_2d<rgba16float, read_write>",
-            )
-        } else {
-            source
-        };
+        // An upscaler's SPD pass on the core resource set runs as two
+        // dispatches, each its own module (`spd_tail_pipeline`).
+        let split_upscaler_spd = upscaler_spd(effect, pass).filter(|_| self.capabilities.split_spd);
+        let source = self.wgsl_source(
+            effect,
+            &blob,
+            split_upscaler_spd.map(|_| FfxWgslSpdPhase::Tiles),
+        )?;
         let reflection = Reflection::new(&source)?;
 
         let tables: [(&[FfxShaderBlobBinding], u32); 6] = [
@@ -2259,6 +2589,11 @@ impl FfxInterface for FfxWgpuBackend {
             grid_group,
             groups: RefCell::new(Vec::new()),
         };
+        let tail = if split_upscaler_spd == Some(true) {
+            Some(self.spd_tail_pipeline(&blob, &record, pipeline_description)?)
+        } else {
+            None
+        };
         let handle = if let Some(index) = self.pipelines.iter().position(Option::is_none) {
             self.pipelines[index] = Some(record);
             index + 1
@@ -2266,6 +2601,16 @@ impl FfxInterface for FfxWgpuBackend {
             self.pipelines.push(Some(record));
             self.pipelines.len()
         };
+        if let Some(tail) = tail {
+            let index = if let Some(index) = self.pipelines.iter().position(Option::is_none) {
+                self.pipelines[index] = Some(tail);
+                index
+            } else {
+                self.pipelines.push(Some(tail));
+                self.pipelines.len() - 1
+            };
+            self.spd_tails.insert(handle, index);
+        }
         // One binding per register and array index, as the DX12 backend
         // expands the blob's binding counts.
         let expand = |table: &[FfxShaderBlobBinding]| {
@@ -2317,6 +2662,9 @@ impl FfxInterface for FfxWgpuBackend {
             .and_then(|index| self.pipelines.get_mut(index))
         {
             *slot = None;
+        }
+        if let Some(tail) = self.spd_tails.remove(&pipeline.pipeline) {
+            self.pipelines[tail] = None;
         }
         #[cfg(feature = "frame-generation")]
         self.output_variants.retain(|(original, _), variant| {
@@ -2478,6 +2826,7 @@ fn create_object(
     device: &wgpu::Device,
     d: &FfxCreateResourceDescription,
     format_override: Option<wgpu::TextureFormat>,
+    texture_atomics: bool,
 ) -> Result<(Object, u64), FfxErrorCode> {
     let description = d.resource_description;
     if description.r#type == FfxResourceType::Buffer {
@@ -2524,11 +2873,15 @@ fn create_object(
         usage |= wgpu::TextureUsages::STORAGE_BINDING;
         // The SDK's `Interlocked*` on 32-bit integer UAVs (FSR2's
         // reconstructed depth) are WGSL texture atomics, which wgpu's Metal
-        // backend only performs on a texture created for them.
-        if matches!(
-            format,
-            wgpu::TextureFormat::R32Uint | wgpu::TextureFormat::R32Sint
-        ) {
+        // backend only performs on a texture created for them. Without
+        // texture atomics a pass takes them on the texture's words in a
+        // buffer (`back_buffer_bindings`), and WebGPU has no such usage.
+        if texture_atomics
+            && matches!(
+                format,
+                wgpu::TextureFormat::R32Uint | wgpu::TextureFormat::R32Sint
+            )
+        {
             usage |= wgpu::TextureUsages::STORAGE_ATOMIC;
         }
     }

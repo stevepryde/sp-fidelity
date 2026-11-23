@@ -246,7 +246,18 @@ fn InitParams(iPxHrPos: FfxInt32x2) -> AccumulationPassCommonParams
     params.fMotionVector = GetMotionVector(iPxHrPos, fHrUv);
     params.fHrVelocity = GetPxHrVelocity_f32x2(params.fMotionVector);
 
+#if defined(FFX_WGSL_CORE)
+    // WGSL's specification rejects two written pointers into one variable:
+    // the outputs go through locals, which the function writes before any
+    // read.
+    var fReprojectedHrUv: FfxFloat32x2 = params.fReprojectedHrUv;
+    var bIsExistingSample: FfxBoolean = params.bIsExistingSample;
+    ComputeReprojectedUVs(params, &fReprojectedHrUv, &bIsExistingSample);
+    params.fReprojectedHrUv = fReprojectedHrUv;
+    params.bIsExistingSample = bIsExistingSample;
+#else
     ComputeReprojectedUVs(params, &params.fReprojectedHrUv, &params.bIsExistingSample);
+#endif
 
     params.fDepthClipFactor = ffxSaturate_f32(SampleDepthClip(params.fLrUv_HwSampler));
 

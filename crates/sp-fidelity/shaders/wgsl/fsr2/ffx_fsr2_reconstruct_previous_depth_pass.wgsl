@@ -34,6 +34,10 @@
 
 #define FSR2_BIND_CB_FSR2                                   0
 
+// WGSL: this pass takes the nearest depth with InterlockedMin/Max, which the
+// callbacks declare as buffer atomics where the backend has no texture atomics.
+#define FFX_WGSL_RECONSTRUCTED_DEPTH_ATOMICS
+
 #include "fsr2/ffx_fsr2_callbacks.wgsl"
 #include "fsr2/ffx_fsr2_common.wgsl"
 #include "fsr2/ffx_fsr2_sample.wgsl"

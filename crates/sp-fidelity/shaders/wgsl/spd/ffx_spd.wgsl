@@ -30,7 +30,17 @@
 #if defined(FFX_GPU)
 // Backend scheduling adaptation: 0 preserves the SDK dispatch, 1 computes
 // independent tiles, 2 completes the same reduction after a dispatch barrier.
+// A backend that assembles one module a dispatch (FFX_WGSL_SPD_PHASE, where
+// a mip is write-only in the first and read-only in the second) fixes the
+// phase; the SDK dispatch's exit on the atomic counter is then not compiled,
+// since WGSL's uniformity analysis rejects the barriers that follow it.
+#if FFX_WGSL_SPD_PHASE == 1
+const spdPhase: u32 = 1u;
+#elif FFX_WGSL_SPD_PHASE == 2
+const spdPhase: u32 = 2u;
+#else
 override spdPhase: u32 = 0u;
+#endif
 #if defined(FFX_SPD_PACKED_ONLY)
 // Avoid compiler errors by including default implementations of these callbacks.
 fn SpdLoadSourceImage(p: FfxInt32x2, slice: FfxUInt32) -> FfxFloat32x4
@@ -455,9 +465,11 @@ fn SpdDownsample_u32x2_u32_u32_u32_u32(workGroupID: FfxUInt32x2, localInvocation
 
     // increase the global atomic counter for the given slice and check if it's the last remaining thread group:
     // terminate if not, continue if yes.
+#if !defined(FFX_WGSL_SPD_PHASE)
     if (spdPhase == 0u && SpdExitWorkgroup(numWorkGroups, localInvocationIndex, slice)) {
         return;
     }
+#endif
 
     // reset the global atomic counter back to 0 for the next spd dispatch
     SpdResetAtomicCounter(slice);
@@ -843,21 +855,25 @@ fn SpdDownsampleH_u32x2_u32_u32_u32_u32(workGroupID: FfxUInt32x2, localInvocatio
     let x: FfxUInt32      = sub_xy.x + 8u * ((localInvocationIndex >> 6u) % 2u);
     let y: FfxUInt32      = sub_xy.y + 8u * ((localInvocationIndex >> 7u));
 
-    // compute MIP level 0 and 1
-    SpdDownsampleMips_0_1H(x, y, workGroupID, localInvocationIndex, mips, slice);
+    if (spdPhase != 2u) {
+        // compute MIP level 0 and 1
+        SpdDownsampleMips_0_1H(x, y, workGroupID, localInvocationIndex, mips, slice);
 
-    // compute MIP level 2, 3, 4, 5
-    SpdDownsampleNextFourH(x, y, workGroupID, localInvocationIndex, 2u, mips, slice);
+        // compute MIP level 2, 3, 4, 5
+        SpdDownsampleNextFourH(x, y, workGroupID, localInvocationIndex, 2u, mips, slice);
+    }
 
-    if (mips < 7u) {
+    if (mips < 7u || spdPhase == 1u) {
         return;
     }
 
     // increase the global atomic counter for the given slice and check if it's the last remaining thread group:
     // terminate if not, continue if yes.
-    if (SpdExitWorkgroup(numWorkGroups, localInvocationIndex, slice)) {
+#if !defined(FFX_WGSL_SPD_PHASE)
+    if (spdPhase == 0u && SpdExitWorkgroup(numWorkGroups, localInvocationIndex, slice)) {
         return;
     }
+#endif
 
     // reset the global atomic counter back to 0 for the next spd dispatch
     SpdResetAtomicCounter(slice);

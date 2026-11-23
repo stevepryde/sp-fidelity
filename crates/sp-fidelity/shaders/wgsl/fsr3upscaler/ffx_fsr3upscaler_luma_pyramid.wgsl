@@ -74,10 +74,15 @@ fn SpdLoad(tex: FfxInt32x2, slice: FfxUInt32) -> FfxFloat32x4
 {
     // WGSL does not fold resource switches across calls as DXC does. This
     // pass only accesses mip 5; keep its reachable bindings equal to the SDK.
+#if FFX_WGSL_SPD_PHASE == 1
+    // A split SPD loads mip 5 in its second dispatch only.
+    return FfxFloat32x4(0);
+#else
     if (ffxWgslOutside(tex, textureDimensions(rw_spd_mip5))) {
         return FfxFloat32x4(0);
     }
     return FfxFloat32x4(textureLoad(rw_spd_mip5, tex).xy, 0, 0);
+#endif
 }
 
 fn SpdReduce4(v0: FfxFloat32x4, v1: FfxFloat32x4, v2: FfxFloat32x4, v3: FfxFloat32x4) -> FfxFloat32x4
@@ -90,9 +95,12 @@ fn SpdStore(pix: FfxInt32x2, outValue: FfxFloat32x4, index_: FfxUInt32, slice: F
     var index: FfxUInt32 = index_;
     if (index == 5)
     {
+#if FFX_WGSL_SPD_PHASE != 2
+        // A split SPD stores mip 5 in its first dispatch only.
         if (!ffxWgslOutside(pix, textureDimensions(rw_spd_mip5))) {
             textureStore(rw_spd_mip5, pix, FfxFloat32x4(outValue.xy, 0, 0));
         }
+#endif
     }
     else if (index == 0) {
         StoreFarthestDepthMip1(FfxUInt32x2(pix), outValue[DEPTH_IN_METERS]);

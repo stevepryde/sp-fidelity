@@ -18,7 +18,11 @@ are recorded into the caller's `wgpu::CommandEncoder`.
 
 ## Use
 
-For FSR upscaling, request `required_features()` when creating the device.
+For FSR upscaling, request `features_for(adapter.features())` when creating
+the device: `required_features()` where the adapter has them, as native
+adapters do, and `core_required_features()` otherwise, which a browser's
+WebGPU can grant ([Resource sets](#resource-sets)). The device also needs
+`storage_textures_per_stage(effect)` storage textures a shader stage.
 The standalone reflections denoiser uses core WebGPU features. Both effects
 can use FP16 permutations when the device enables `SHADER_F16`. Get the
 backend interface and hand it to the SDK effect context:
@@ -83,6 +87,8 @@ discards its unexecuted jobs before registration slots are reused. Pending
 resource initialization uploads survive a failed dispatch and are recorded
 before the next valid workload, including uploads for shared effect contexts.
 Timestamp pools measure SDK compute jobs; clear and copy jobs consume no slots.
+A job's pair spans both of a split SPD's dispatches; the transfers of a
+texture a pass binds as a buffer are not timed.
 
 Each pipeline keeps the bind groups of the last two resource sets its jobs
 bound (FSR2 alternates two by frame) and its own uniform buffers, into which
@@ -150,7 +156,8 @@ describe resource ownership, pacing, platform adaptations and known limitations.
 
 ## Features
 
-`required_features()` covers the native features used by FSR2 and FSR3:
+`required_features()` covers the features with which FSR2 and FSR3 run as the
+SDK allocates and dispatches them:
 
 | Feature | Needed for |
 | --- | --- |
@@ -160,9 +167,57 @@ describe resource ownership, pacing, platform adaptations and known limitations.
 | `TEXTURE_FORMAT_16BIT_NORM` | the R16_SNORM Lanczos and maximum-bias lookup textures |
 | `FLOAT32_FILTERABLE` | linear sampling of 32-bit float application inputs |
 
+`core_required_features()` is `FLOAT32_FILTERABLE` alone.
+`features_for(available)` returns the first of the two sets `available` holds,
+or `None`. One pass binds at most `storage_textures_per_stage(effect)` storage
+textures (5 for FSR2, 6 for the FSR3 upscaler); WebGPU's default limit is 4, so
+request the adapter's `max_storage_textures_per_shader_stage`.
+
 Clears use storage writes, so `CLEAR_TEXTURE` is not needed. `R32Uint` clears
 preserve the float colour's bit pattern, including the `1.0` depth sentinel;
 `R8Uint` and `Rg16Sint` support the zero clears used by the SDK.
+
+## Resource sets
+
+The backend reads the device's features, as it reads `SHADER_F16` for
+`fp16Supported`, and runs FSR2 and the FSR3 upscaler on one of two resource
+sets. The SDK's descriptions, jobs and dispatches are the same on both; an
+observer and `get_resource_description` see the SDK's description of every
+resource.
+
+- **The SDK's**, on a device with `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`,
+  `TEXTURE_ATOMIC` and `TEXTURE_FORMAT_16BIT_NORM`: the SDK's formats,
+  read-write storage textures and texture atomics, SPD in one dispatch.
+- **The core set**, on any other device: storage textures in WebGPU's core
+  formats and accesses, atomics in a storage buffer, and SPD in two
+  dispatches. Every texel a pass writes is the one the SDK's set writes
+  ([SDK-P38](../sp-fidelity/CONFORMANCE.md#sdk-p38--the-core-resource-set)).
+
+| SDK format and access | Core allocation |
+| --- | --- |
+| `R16G16_FLOAT`, `R16_FLOAT` UAV | `Rgba16Float` |
+| `R8G8_UNORM`, `R8_UNORM` UAV | `Rgba8Unorm` |
+| `R11G11B10_FLOAT` UAV | `Rgba16Float`; the port truncates each store to 11/11/10 bits |
+| `R8_UNORM` read-write (new locks) | `R32Float` holding the unorm value |
+| `R32G32_FLOAT`, `R32G32B32A32_FLOAT` 1×1 read-write (auto exposure, frame info) | `R32Float` 2×1 or 4×1, a texel a component |
+| `R32_UINT` with `InterlockedMin`/`Max` (reconstructed previous depth) | `R32Uint`, its words in a storage buffer of atomics while the pass runs |
+| `R16_SNORM` lookups | `R32Float` holding each snorm value; no pass of the core set reads one |
+| mips SPD reads and writes | `Rgba16Float`, write-only in SPD's first dispatch and read-only in its second |
+
+Subgroups are separate: with `SUBGROUP` SPD uses its wave operations, and
+without it the SDK's `FFX_SPD_NO_WAVE_OPERATIONS` path. A device without
+subgroups reports no wave lanes, so the SDK selects the permutations of
+hardware without 64-wide waves.
+
+A caller's own textures follow the set. Create FSR3's shared textures with
+`ffx_create_texture_wgpu(FfxEffect::Fsr3Upscaler, &description)` and register
+each with `ffx_get_described_resource_wgpu`, which keeps the SDK's
+description. A texture a generate-reactive pass writes is `R8Unorm` on the
+SDK's set and `Rgba8Unorm` on the core set. `ffx_sdk_texels_wgpu` and
+`ffx_texels_from_sdk_wgpu` convert texels between an allocation and the SDK's
+layout, for captures and uploads.
+
+Frame generation runs on the SDK's set only.
 
 ## WASM and WebGPU
 
@@ -170,10 +225,16 @@ The runtime crates compile for `wasm32-unknown-unknown` with wgpu's WebGPU
 backend enabled. Shader reflection uses Naga directly from wgpu's compatible
 release line.
 
-FSR2 and FSR3 execution in browser WebGPU is not supported: `required_features()`
-includes native-only texture atomics, 16-bit normalized and adapter-specific
-formats. Applications choose their own fallback when those features are
-unavailable. `readback::Readback::read_all` blocks for GPU completion and is
+FSR2 and FSR3 upscaling run in a browser on the core resource set, where the
+adapter has `float32-filterable` and six storage textures a stage. The
+browser compiles the port's WGSL itself, so the core set's source also holds
+to what WGSL's specification requires and naga does not: no infinite constant
+expression, no two written pointers into one variable, and no
+`workgroupBarrier` after a branch on a value the workgroup does not share
+(SPD's one-dispatch exit, which its two dispatches do not take). A job's
+validation error cannot be read back there (SDK-P28): leave it to the page's
+error scopes and uncaptured-error handler.
+`readback::Readback::read_all` blocks for GPU completion and is
 native-only; it panics on WebGPU. GPU tests and the oracle remain native-only.
 
 ## Platform workarounds
@@ -203,7 +264,10 @@ Only here, never in the port:
 - Metal cannot read and write `Rg16Float` textures in one pass. FSR3 upscaler's
   SPD mip texture is allocated as `Rgba16Float`; only `.xy` stores SDK data.
   Its read-write declarations are specialized by the backend. Other RG16F
-  resources retain their original format.
+  resources retain their original format on the SDK's resource set.
+- SDK-P38: a device without the SDK's storage formats, read-write accesses
+  or texture atomics runs FSR2 and the FSR3 upscaler on the core resource
+  set ([Resource sets](#resource-sets)).
 - Optical flow's optional 1D allocations use one-row 2D textures to match
   the original shaders' 2D bindings. Logical SDK descriptions remain 1D.
 - SDK-P28: wgpu reports a view or bind group it rejects when it is created,

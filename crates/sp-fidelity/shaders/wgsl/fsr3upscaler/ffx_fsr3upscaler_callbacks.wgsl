@@ -30,6 +30,9 @@
 #include "fsr3upscaler/ffx_fsr3upscaler_resources.wgsl"
 #if defined(FFX_GPU)
 #include "ffx_core.wgsl"
+#if defined(FFX_WGSL_CORE)
+#include "ffx_core_storage.wgsl"
+#endif
 #if defined(FSR3UPSCALER_BIND_CB_FSR3UPSCALER)
 struct cbFSR3Upscaler_t
 {
@@ -687,7 +690,13 @@ fn LoadNewLocks(iPxPos: FfxUInt32x2) -> FfxFloat32
 #endif
 
 #if defined(FSR3UPSCALER_BIND_UAV_NEW_LOCKS)
+#if defined(FFX_WGSL_CORE)
+// WebGPU's core read-write formats are 32-bit: r32float holds the value the
+// R8_UNORM texel would return (StoreNewLocks).
+@group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_NEW_LOCKS) var rw_new_locks: texture_storage_2d<r32float, read_write>;
+#else
 @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_NEW_LOCKS) var rw_new_locks: texture_storage_2d<r8unorm, read_write>;
+#endif
 
 fn LoadRwNewLocks(iPxPos: FfxUInt32x2) -> FfxFloat32
 {
@@ -700,7 +709,11 @@ fn LoadRwNewLocks(iPxPos: FfxUInt32x2) -> FfxFloat32
 fn StoreNewLocks(iPxPos: FfxUInt32x2, newLock: FfxFloat32)
 {
     if (!ffxWgslOutside(FfxInt32x2(iPxPos), textureDimensions(rw_new_locks))) {
+#if defined(FFX_WGSL_CORE)
+        textureStore(rw_new_locks, iPxPos, FfxFloat32x4(ffxWgslUnorm8(newLock)));
+#else
         textureStore(rw_new_locks, iPxPos, FfxFloat32x4(newLock));
+#endif
     }
 }
 #endif
@@ -718,6 +731,38 @@ fn LoadReconstructedPrevDepth(iPxPos: FfxUInt32x2) -> FfxFloat32
 #endif
 
 #if defined(FSR3UPSCALER_BIND_UAV_RECONSTRUCTED_PREV_NEAREST_DEPTH)
+#if defined(FFX_WGSL_CORE)
+// WGSL without texture atomics: the texture's words as a storage buffer, one
+// a texel in rows of the maximum render width, the width of the texture
+// ffxFsr3UpscalerGetSharedResourceDescriptions describes. The backend
+// transfers the texture into it before the pass and back after.
+@group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_RECONSTRUCTED_PREV_NEAREST_DEPTH) var<storage, read_write> rw_reconstructed_previous_nearest_depth: array<atomic<FfxUInt32>>;
+
+fn StoreReconstructedDepth(iPxSample: FfxUInt32x2, fDepth: FfxFloat32)
+{
+    let uDepth: FfxUInt32 = bitcast<FfxUInt32>(fDepth);
+
+    // WGSL: the buffer has no rows; a position outside the texture would
+    // land on another texel's word.
+    if (ffxWgslOutside(FfxInt32x2(iPxSample), FfxUInt32x2(MaxRenderSize()))) {
+        return;
+    }
+    let uTexel: FfxUInt32 = iPxSample.y * FfxUInt32(MaxRenderSize().x) + iPxSample.x;
+    #if FFX_FSR3UPSCALER_OPTION_INVERTED_DEPTH
+        atomicMax(&rw_reconstructed_previous_nearest_depth[uTexel], uDepth);
+    #else
+        atomicMin(&rw_reconstructed_previous_nearest_depth[uTexel], uDepth); // min for standard, max for inverted depth
+    #endif
+}
+
+fn SetReconstructedDepth(iPxSample: FfxUInt32x2, uValue: FfxUInt32)
+{
+    if (ffxWgslOutside(FfxInt32x2(iPxSample), FfxUInt32x2(MaxRenderSize()))) {
+        return;
+    }
+    atomicStore(&rw_reconstructed_previous_nearest_depth[iPxSample.y * FfxUInt32(MaxRenderSize().x) + iPxSample.x], uValue);
+}
+#else
 @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_RECONSTRUCTED_PREV_NEAREST_DEPTH) var rw_reconstructed_previous_nearest_depth: texture_storage_2d<r32uint, atomic>;
 
 fn StoreReconstructedDepth(iPxSample: FfxUInt32x2, fDepth: FfxFloat32)
@@ -742,6 +787,7 @@ fn SetReconstructedDepth(iPxSample: FfxUInt32x2, uValue: FfxUInt32)
     }
     textureStore(rw_reconstructed_previous_nearest_depth, iPxSample, FfxUInt32x4(uValue));
 }
+#endif
 #endif
 
 #if defined(FSR3UPSCALER_BIND_UAV_DILATED_DEPTH)
@@ -941,6 +987,25 @@ fn StorePrevPostAlpha(iPxPos: FFX_MIN16_I2, color: FFX_MIN16_F3)
 #endif
 
 #if defined(FSR3UPSCALER_BIND_UAV_FRAME_INFO)
+#if defined(FFX_WGSL_CORE)
+// WebGPU's core read-write formats have one component: the backend allocates
+// the 1x1 texture as r32float 4x1, a texel a component.
+@group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_FRAME_INFO) var rw_frame_info: texture_storage_2d<r32float, read_write>;
+
+fn LoadFrameInfo() -> FfxFloat32x4
+{
+    return FfxFloat32x4(textureLoad(rw_frame_info, FfxInt32x2(0, 0)).x, textureLoad(rw_frame_info, FfxInt32x2(1, 0)).x,
+                        textureLoad(rw_frame_info, FfxInt32x2(2, 0)).x, textureLoad(rw_frame_info, FfxInt32x2(3, 0)).x);
+}
+
+fn StoreFrameInfo(fInfo: FfxFloat32x4)
+{
+    textureStore(rw_frame_info, FfxInt32x2(0, 0), FfxFloat32x4(fInfo.x));
+    textureStore(rw_frame_info, FfxInt32x2(1, 0), FfxFloat32x4(fInfo.y));
+    textureStore(rw_frame_info, FfxInt32x2(2, 0), FfxFloat32x4(fInfo.z));
+    textureStore(rw_frame_info, FfxInt32x2(3, 0), FfxFloat32x4(fInfo.w));
+}
+#else
 @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_FRAME_INFO) var rw_frame_info: texture_storage_2d<rgba32float, read_write>;
 
 fn LoadFrameInfo() -> FfxFloat32x4
@@ -953,37 +1018,86 @@ fn StoreFrameInfo(fInfo: FfxFloat32x4)
     textureStore(rw_frame_info, FfxInt32x2(0, 0), fInfo);
 }
 #endif
+#endif
 
 #if defined(FSR3UPSCALER_BIND_SRV_FRAME_INFO)
 @group(0) @binding(FFX_WGSL_BINDING_OFFSET_SRV + FSR3UPSCALER_BIND_SRV_FRAME_INFO) var r_frame_info: texture_2d<FfxFloat32>;
 
 fn FrameInfo() -> FfxFloat32x4
 {
+#if defined(FFX_WGSL_CORE)
+    return FfxFloat32x4(textureLoad(r_frame_info, FfxInt32x2(0, 0), 0).x, textureLoad(r_frame_info, FfxInt32x2(1, 0), 0).x,
+                        textureLoad(r_frame_info, FfxInt32x2(2, 0), 0).x, textureLoad(r_frame_info, FfxInt32x2(3, 0), 0).x);
+#else
     return textureLoad(r_frame_info, FfxInt32x2(0, 0), 0);
+#endif
 }
 #endif
 
 
 // WGSL: each mip is an explicitly bound view. All can be read by RWLoadPyramid.
+// A split SPD (FFX_WGSL_SPD_PHASE) writes mips 0 to 5 in its first dispatch
+// and reads mip 5, the only one SpdLoad reads, in its second, so no mip needs
+// a read-write texture.
 #if defined(FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_0)
+#if defined(FFX_WGSL_SPD_PHASE)
+@group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_0) var rw_spd_mip0: texture_storage_2d<rg16float, write>;
+#else
 @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_0) var rw_spd_mip0: texture_storage_2d<rg16float, read_write>;
 #endif
+#endif
 #if defined(FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_1)
+#if defined(FFX_WGSL_SPD_PHASE)
+@group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_1) var rw_spd_mip1: texture_storage_2d<rg16float, write>;
+#else
 @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_1) var rw_spd_mip1: texture_storage_2d<rg16float, read_write>;
 #endif
+#endif
 #if defined(FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_2)
+#if defined(FFX_WGSL_SPD_PHASE)
+@group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_2) var rw_spd_mip2: texture_storage_2d<rg16float, write>;
+#else
 @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_2) var rw_spd_mip2: texture_storage_2d<rg16float, read_write>;
 #endif
+#endif
 #if defined(FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_3)
+#if defined(FFX_WGSL_SPD_PHASE)
+@group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_3) var rw_spd_mip3: texture_storage_2d<rg16float, write>;
+#else
 @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_3) var rw_spd_mip3: texture_storage_2d<rg16float, read_write>;
 #endif
+#endif
 #if defined(FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_4)
+#if defined(FFX_WGSL_SPD_PHASE)
+@group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_4) var rw_spd_mip4: texture_storage_2d<rg16float, write>;
+#else
 @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_4) var rw_spd_mip4: texture_storage_2d<rg16float, read_write>;
 #endif
+#endif
 #if defined(FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_5)
+#if FFX_WGSL_SPD_PHASE == 1
+@group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_5) var rw_spd_mip5: texture_storage_2d<rg16float, write>;
+#elif FFX_WGSL_SPD_PHASE == 2
+@group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_5) var rw_spd_mip5: texture_storage_2d<rg16float, read>;
+#else
 @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_5) var rw_spd_mip5: texture_storage_2d<rg16float, read_write>;
 #endif
+#endif
 #if defined(FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_0) && defined(FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_1) && defined(FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_2) && defined(FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_3) && defined(FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_4) && defined(FSR3UPSCALER_BIND_UAV_SPD_MIPS_LEVEL_5)
+#if FFX_WGSL_SPD_PHASE == 1
+// SPD loads mip 5 in its second dispatch only (SpdDownsampleMips_6_7).
+fn RWLoadPyramid(iPxPos: FfxInt32x2, index: FfxUInt32) -> FfxFloat32x2
+{
+    return FfxFloat32x2(0);
+}
+#elif FFX_WGSL_SPD_PHASE == 2
+// SpdLoad reads mip 5 only.
+fn RWLoadPyramid(iPxPos: FfxInt32x2, index: FfxUInt32) -> FfxFloat32x2
+{
+    if (index != 5u || ffxWgslOutside(iPxPos, textureDimensions(rw_spd_mip5))) { return FfxFloat32x2(0); }
+    return textureLoad(rw_spd_mip5, iPxPos).xy;
+}
+#else
 fn RWLoadPyramid(iPxPos: FfxInt32x2, index: FfxUInt32) -> FfxFloat32x2
 {
     switch index {
@@ -1014,6 +1128,14 @@ fn RWLoadPyramid(iPxPos: FfxInt32x2, index: FfxUInt32) -> FfxFloat32x2
         default: { return FfxFloat32x2(0); }
     }
 }
+#endif
+#if FFX_WGSL_SPD_PHASE == 2
+// SPD stores mips 0 to 5 in its first dispatch only: the second begins at
+// mip 6, which StorePyramid drops.
+fn StorePyramid(iPxPos: FfxInt32x2, outValue: FfxFloat32x2, index: FfxUInt32)
+{
+}
+#else
 fn StorePyramid(iPxPos: FfxInt32x2, outValue: FfxFloat32x2, index: FfxUInt32)
 {
     switch index {
@@ -1038,6 +1160,7 @@ fn StorePyramid(iPxPos: FfxInt32x2, outValue: FfxFloat32x2, index: FfxUInt32)
         default: {}
     }
 }
+#endif
 #endif
 // WGSL texture atomics discard their result. The SDK needs InterlockedAdd's
 // original value, so texel (0, 0) is element zero of a coherent storage buffer.

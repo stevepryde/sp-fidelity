@@ -26,8 +26,9 @@ in `vendor/sdk-1.1.4/`.
 
 The [`sp-fidelity-wgpu`](https://github.com/stevepryde/sp-fidelity/blob/main/crates/sp-fidelity-wgpu/README.md)
 backend implements `interface::FfxInterface`. Both crates compile for
-`wasm32-unknown-unknown`, but FSR2/FSR3 execution in browser WebGPU and forced
-wave64 are not supported. The upscaled output uses RGBA16F. The SDK's
+`wasm32-unknown-unknown`, and the backend runs FSR2 and FSR3 upscaling in
+browser WebGPU on its core resource set; `shaders::ffx_get_upscaler_wgsl_source`
+assembles their passes for it. Forced wave64 is not supported. The upscaled output uses RGBA16F. The SDK's
 standalone generate-reactive host call remains a no-op; its GPU pass is ported.
 
 ## Reflections denoiser

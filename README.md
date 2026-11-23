@@ -36,7 +36,8 @@ in the [conformance record](crates/sp-fidelity/CONFORMANCE.md#sdk-p34--outgoing-
 | Native wgpu backend | Supported; conformance recorded on Apple Metal |
 | WASM compilation (`wasm32-unknown-unknown`) | Supported |
 | Other FidelityFX effects | Planned |
-| FSR2/FSR3 execution in browser WebGPU, forced wave64 | Not supported |
+| FSR2/FSR3 upscaling in browser WebGPU | Supported on the backend's core resource set; see [resource sets](crates/sp-fidelity-wgpu/README.md#resource-sets) |
+| Frame generation in browser WebGPU, forced wave64 | Not supported |
 
 Recorded FSR2 conformance against the original: **9 host test cases, 16,866
 matching host events, and 64,005 bit-exact GPU output comparisons**.

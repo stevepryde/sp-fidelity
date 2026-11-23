@@ -516,6 +516,10 @@ fn ffxSaturate_f16x4(x: FFX_MIN16_F4) -> FFX_MIN16_F4
 
 #endif // #if FFX_HALF
 
+// WGSL: no subgroup built-in is declared where the backend's device has no
+// subgroups (FFX_SPD_NO_WAVE_OPERATIONS): a browser's WGSL compiler rejects
+// them without the extension, used or not.
+#if !defined(FFX_SPD_NO_WAVE_OPERATIONS)
 // WGSL: HLSL WaveGetLaneIndex() is an intrinsic; WGSL provides the lane index only
 // as an entry-point builtin. Each wave-using entry point stores it here first.
 var<private> ffx_wgsl_subgroup_invocation_id: FfxUInt32;
@@ -555,6 +559,7 @@ fn ffxWaveReadLaneFirstU1(v: FfxUInt32) -> FfxUInt32
 {
     return subgroupBroadcastFirst(v);
 }
+#endif // #if !defined(FFX_SPD_NO_WAVE_OPERATIONS)
 
 // ---- ffx_core_gpu_common.h ---------------------------------------------------
 
@@ -918,7 +923,14 @@ fn ffxLinearFromPQ_f32x3(value: FfxFloat32x3) -> FfxFloat32x3 {
 fn ffxLinearFromSrgb_f32x3(value: FfxFloat32x3) -> FfxFloat32x3 {
     let j = FfxFloat32x3(0.04045, 1.0 / 12.92, 2.4);
     let k = FfxFloat32x2(1.0 / 1.055, 0.055 / 1.055);
+#if defined(FFX_WGSL_CORE)
+    // WGSL's specification rejects a constant expression that is infinite;
+    // the same bits through a variable are not one.
+    var negative_infinity: FfxUInt32 = 0xff800000u;
+    let x = clamp((value - j.xxx) * FfxFloat32x3(bitcast<f32>(negative_infinity)), FfxFloat32x3(0.0), FfxFloat32x3(1.0));
+#else
     let x = clamp((value - j.xxx) * FfxFloat32x3(bitcast<f32>(0xff800000u)), FfxFloat32x3(0.0), FfxFloat32x3(1.0));
+#endif
     let y = value * j.yyy;
     let z = pow(value * k.xxx + k.yyy, j.zzz);
     let r = (-x) * z + z;

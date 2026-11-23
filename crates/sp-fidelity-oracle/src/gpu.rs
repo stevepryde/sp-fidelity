@@ -40,6 +40,26 @@ impl Gpu {
         Self::with_features(features, max_workgroups_per_dimension)
     }
 
+    /// A device with only the features of the backend's core resource set,
+    /// as a browser's has, and `SHADER_F16` when `fp16`.
+    pub fn core(fp16: bool) -> Self {
+        let features = sp_fidelity_wgpu::core_required_features()
+            | if fp16 {
+                wgpu::Features::SHADER_F16
+            } else {
+                wgpu::Features::empty()
+            };
+        Self::with_features(features, None)
+    }
+
+    /// Whether the backend runs its core resource set on this device.
+    pub fn is_core(&self) -> bool {
+        !self
+            .device
+            .features()
+            .contains(sp_fidelity_wgpu::required_features() - wgpu::Features::SUBGROUP)
+    }
+
     /// Request exactly the feature set available to the caller under test.
     pub fn with_features(
         features: wgpu::Features,
@@ -164,9 +184,18 @@ pub fn write_inputs_with_buffers(
     .unwrap();
 }
 
-/// Readbacks and their dump paths; an optional physical texel size narrows
-/// widened RGBA texels back to the SDK's original RG half or float layout.
-type Pending = Rc<RefCell<Vec<(PathBuf, Readback, Option<usize>)>>>;
+/// Readbacks and their dump paths; a texture's SDK format and its own, where
+/// the backend allocated it differently, bring its texels back to the SDK's
+/// layout (`ffx_sdk_texels_wgpu`).
+type Pending = Rc<
+    RefCell<
+        Vec<(
+            PathBuf,
+            Readback,
+            Option<(FfxSurfaceFormat, wgpu::TextureFormat)>,
+        )>,
+    >,
+>;
 
 /// Prepares a job before its capture, e.g. writes its inputs.
 pub type Prepare = Box<dyn FnMut(&mut FfxWgpuJobObservation<'_>)>;
@@ -227,12 +256,8 @@ impl Capture {
             .unzip();
         for ((path, narrow), bytes) in targets.iter().zip(Readback::read_all(device, readbacks)) {
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            let bytes: Vec<u8> = if let Some(size) = *narrow {
-                bytes
-                    .chunks_exact(size)
-                    .flat_map(|t| &t[..size / 2])
-                    .copied()
-                    .collect()
+            let bytes: Vec<u8> = if let Some((sdk, allocation)) = *narrow {
+                sp_fidelity_wgpu::ffx_sdk_texels_wgpu(sdk, allocation, &bytes)
             } else {
                 bytes
             };
@@ -300,11 +325,7 @@ fn observe(
                 } else {
                     texture.mip_level_count()
                 };
-                let narrow = match (resource.description.format, texture.format()) {
-                    (FfxSurfaceFormat::R32G32Float, wgpu::TextureFormat::Rgba32Float) => Some(16),
-                    (FfxSurfaceFormat::R16G16Float, wgpu::TextureFormat::Rgba16Float) => Some(8),
-                    _ => None,
-                };
+                let narrow = Some((resource.description.format, texture.format()));
                 for mip in 0..mips {
                     pending.push((
                         stage_directory.join(format!("{}.mip-{mip}.bin", resource.name)),

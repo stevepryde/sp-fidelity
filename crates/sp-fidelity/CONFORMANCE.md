@@ -345,10 +345,13 @@ history diagnostics, not successful exact comparisons or numeric tolerances.
 
 ## Differences and platform adaptations
 
-The runtime crates support WASM compilation with the WebGPU backend. FSR2 and FSR3
-execution still requires native-only GPU features; no browser GPU conformance
-is claimed. This build adaptation changes neither the SDK algorithms nor
-the shaders or conformance counts above.
+The runtime crates support WASM compilation with the WebGPU backend. On a
+device without the SDK's storage formats and texture atomics, a browser's
+among them, the wgpu backend runs FSR2 and the FSR3 upscaler on its core
+resource set (SDK-P38), which is compared here on native devices requested
+with a browser's features; no conformance run inside a browser is claimed. A
+device with the SDK's features keeps the SDK's resource set, and neither the
+SDK algorithms nor the shaders or conformance counts above change for it.
 
 Adaptation IDs are stable and may have gaps.
 
@@ -370,6 +373,7 @@ Adaptation IDs are stable and may have gaps.
 | SDK-P26 | Naga's Metal output keeps every WGSL loop as a bounded `while (true)` the Metal compiler does not unroll, and branches on `\|\|` | The pass preprocessor performs `FFX_UNROLL` wherever the SDK has it and on five more constant loops; `ffxWgslOutside` uses `\|`. Operations and their order are unchanged. See below. |
 | SDK-P27 | wgpu rejects a view of a mip the texture lacks | FSR2 binds the luminance pyramid's `rw_img_mip_shading_change` and `rw_img_mip_5` to mips 4 and 5 of `FSR2_ExposureMips` whatever its size (`ffx_fsr2.cpp:669–678, 998–1004`); below a 64-pixel maximum render size the texture lacks mip 5, and below 32 mip 4 too. The backend binds the texture's last mip, as AMD's Vulkan backend does (`sdk/src/backends/vk/ffx_vk.cpp:3769–3771` at the SDK revision; the DX12 backend, `sdk/src/backends/dx12/ffx_dx12.cpp:3052` at the SDK revision, indexes past the resource's own descriptors). SPD stores to mip 4 or 5 only when its mip count, from the render size, reaches it (`ffx_fsr2_compute_luminance_pyramid.h:70–72`, `ffx_spd.h:68`), so nothing is written through a substituted view (render size within the maximum), and sizes that have the mips bind them unchanged. |
 | SDK-P28 | wgpu reports an object it rejects when it is created, but the error of recording it only when the encoder finishes, and then the whole encoder, with the application's own work in it, is invalid | A clear or compute job creates its new views and bind group inside validation and out-of-memory error scopes and, if wgpu rejects any, fails before recording them with `FFX_ERROR_BACKEND_API_ERROR`, the code AMD's DX12 backend returns for a failed job (`sdk/src/backends/dx12/ffx_dx12.cpp:3501–3504` at the SDK revision), and wgpu's message. `fpExecuteGpuJobs` stops at the first failed job and executes none after it, which the valid encoder depends on; AMD's DX12 `ExecuteGpuJobsDX12` instead records every job and keeps overwriting its error code (`ffx_dx12.cpp:3461–3499`). Godot's FSR2 backend stops at the first failed job (`execute_gpu_jobs_rd`, `servers/rendering/renderer_rd/effects/fsr2.cpp:479–482` at Godot b130438), fails a job whose UAV view it could not create before recording it (`execute_gpu_job_compute_rd`, `fsr2.cpp:424`), and its RenderingDevice refuses to bind an invalid uniform set (`servers/rendering/rendering_device.cpp:6884–6885`). `ffxFsr2ContextDispatch` ignores `fpExecuteGpuJobs`'s result (`ffx_fsr2.cpp:1321`), as the port does, so the backend keeps the first failure's code and message for `take_job_error`. A failed job records nothing invalid: what it records before its check, a compute job's SDK-P23 conversion copy, is valid (a job observer's commands are the observer's own). Only new objects are checked: a bind group a pipeline kept was checked when it was made, so a texture destroyed after that is recorded and fails at `queue.submit`; and invalid inputs can still invalidate the encoder while a job records, for example one texture passed as both an input and the output (a usage conflict). On WebGPU the scopes resolve only after the call, so there the error stays deferred to `finish`. |
+| SDK-P38 | WebGPU's core set has no texture atomics, writes storage textures in RGBA and 32-bit formats only, reads and writes them in one pass in 32-bit single-component formats only, and has no 16-bit normalized format; a browser's WGSL compiler holds to the specification where naga does not | On a device without the SDK's storage features the backend allocates FSR2's and the FSR3 upscaler's textures in core formats, takes the depth atomics on a storage buffer and runs SPD in two dispatches; every write equals the SDK set's. See below. |
 | SDK-P35 | FSR2 accumulate weights taps outside the render size into its rectification box | A verified upstream bug, corrected in the port's WGSL; see below. |
 | SDK-P36 | FSR2 accumulate writes a new sample's upsample unnormalised when its on-screen weights sum to `FSR2_EPSILON` or less | A verified upstream bug, corrected in the port's WGSL; see below. |
 | SDK-P37 | FSR2 accumulate's deringing bounds take taps outside the render size | A verified upstream bug, corrected in the port's WGSL; see below. |
@@ -679,6 +683,133 @@ the HLSL with only SDK-P35 corrected, leave the range at the left and right
 edges (down to 0.2263 and up to 1.00195), while the port and the corrected HLSL
 keep it and match exactly. The compile tool's `--correction SDK-P37` builds
 the reference.
+
+### SDK-P38 — the core resource set
+
+FSR2 and the FSR3 upscaler create and bind resources WebGPU's core feature
+set cannot hold: UAVs in `R16_FLOAT`, `R16G16_FLOAT`, `R8_UNORM`, `R8G8_UNORM`
+and `R11G11B10_FLOAT`; read-write UAVs in `R8_UNORM`, `R16_FLOAT`,
+`R16G16_FLOAT`, `R32G32_FLOAT` and `R32G32B32A32_FLOAT`;
+`InterlockedMin`/`InterlockedMax` on an `R32_UINT` UAV; and `R16_SNORM`
+lookups. wgpu's browser backend can request none of the features that add
+them (`texture-formats-tier1` and `tier2` have no wgpu feature; texture
+atomics are not in WebGPU), so `required_features()` cannot be granted in a
+browser. The wgpu backend therefore selects, from the device's features, how
+it allocates and binds these resources. A device with
+`TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`, `TEXTURE_ATOMIC` and
+`TEXTURE_FORMAT_16BIT_NORM` gets the SDK's resource set, unchanged: the WGSL
+assembled for it is the same code for every FSR2, FSR3 upscaler and denoiser
+permutation as before this adaptation (5,120 modules compared with comments
+removed). Any other device gets the core set. The SDK's host, its resource
+descriptions, its jobs and its constants are the same on both.
+
+| SDK resource | SDK format and access | Core set | Why the values are the SDK's |
+| --- | --- | --- | --- |
+| Reconstructed previous depth (FSR2; FSR3 shared) | `R32_UINT`, `InterlockedMin`/`Max` | `R32Uint`; the pass that takes the nearest depth binds its words as a storage buffer of `atomic<u32>`, rows of the maximum render width, which the backend transfers from and to the texture (as it does frame interpolation's motion fields) | Minimum and maximum do not depend on order; the words are the texels |
+| Dilated velocity, lock status (FSR2); dilated velocity (FSR3 shared) | `R16G16_FLOAT`, written | `Rgba16Float` | The same 16-bit float conversion at the store and the same filter; `.zw` unused |
+| Lock input luma (FSR2); luma, farthest depth, luma instability, farthest depth mip 1 (FSR3) | `R16_FLOAT`, written | `Rgba16Float` | As above |
+| Exposure mips (FSR2); SPD mips (FSR3, `Rgba16Float` on both sets) | 16-bit float, read-write | `Rgba16Float`, write-only in SPD's first dispatch and read-only in its second | As above; the schedule is SDK-P14's |
+| New locks (FSR2, FSR3) | `R8_UNORM`, read-write | `R32Float` holding the value the unorm texel returns | `ffxWgslUnorm8` rounds to the nearest code on the float's integer mantissa and writes code/255 from its repeating binary expansion: integer arithmetic, exact on any device |
+| Accumulation, shading change (FSR3); auto-reactive, auto-composition (FSR2) | `R8_UNORM`, written | `Rgba8Unorm` | The same unorm conversion |
+| Dilated reactive masks (FSR2) | `R8G8_UNORM`, written | `Rgba8Unorm` | As above |
+| Previous pre- and post-alpha colour (FSR2) | `R11G11B10_FLOAT`, written | `Rgba16Float`; each store truncated to 11/11/10 bits | `ffxWgslUnsignedFloat`, the reflections denoiser's function, compared with typed stores there |
+| Auto exposure (FSR2); frame info (FSR3) | `R32G32_FLOAT`, `R32G32B32A32_FLOAT` 1×1, read-write | `R32Float` 2×1, 4×1: a texel a component | The same 32-bit floats; `Exposure()` reads texel (0, 0) on both |
+| Lanczos and maximum-bias lookups | `R16_SNORM`, read-only | `R32Float` holding each snorm value | No pass of the core set reads one: see below |
+
+Two measurements on Apple M5 (Metal) decided the table. Linear sampling of an
+`R16Float` texture and of an `R32Float` texture holding the same values
+differed in 3,907 of 4,096 samples, by up to 2e-3 relative, and a typed
+`R16Float` store truncates where WGSL's `quantizeToF16` rounds to nearest
+(2,807 of 8,463 probe values), so a 32-bit float texture cannot stand in for
+a 16-bit one that is sampled; `Rgba16Float` against `R16Float` and
+`Rg16Float`, and `Rgba8Unorm` against `R8Unorm`, were identical in stores,
+loads and linear samples. That is why the mips SPD reads and writes keep
+16-bit floats and lose the need for read-write access instead.
+
+**SPD.** A device without subgroups takes the SDK's
+`FFX_SPD_NO_WAVE_OPERATIONS` path, AMD's code. On the core set SPD also runs
+as the two dispatches of SDK-P14 (`spdPhase` 1 and 2, each assembled as its
+own module, `FFX_WGSL_SPD_PHASE`): the tiles write mips 0 to 5 and one
+workgroup then reduces mip 5. The callbacks each dispatch cannot reach are
+empty in its module: `SpdLoad` reads mip 5 only in the second, and `SpdStore`
+passes only mips the first writes to the pass's mip textures. FSR2's
+`SPD_SetMipmap` loses its `default` case there, which reads back the texel it
+stores and which `SpdStore` never takes (it passes mips 4 and 5 only). FSR3's
+shading-change pyramid stores mips 0 to 5 only, so its second dispatch has
+nothing to write and is not run. Where a pyramid has six mips or fewer SPD
+does nothing above mip 5 and the backend records one dispatch.
+
+**Permutations.** The backend reports no wave lanes for a device without
+subgroups (a browser's adapter reports the widest range WebGPU allows,
+whatever the hardware), so the SDK selects the permutations of hardware
+without 64-wide waves: FSR2's and FSR3's reference Lanczos in reprojection,
+not the lookup. The maximum-bias lookup is bound by no pass on either set.
+
+**A browser's compiler.** The core set's WGSL is compiled by the browser,
+which holds to WGSL's specification where naga does not. Three constructs
+differ in it, each under `FFX_WGSL_CORE` or with the split SPD:
+`ffxLinearFromSrgb`'s constant infinity is read through a variable (an
+infinite constant expression is an error); FSR2's `ComputeReprojectedUVs`
+writes its two outputs through locals (two written pointers into one
+variable are an error); and SPD's exit on the atomic counter, after which
+its barriers are no longer in uniform control flow, is not compiled in a
+split module, which never takes it. The subgroup helpers of `ffx_core.wgsl`,
+which nothing calls, are not declared without subgroups.
+
+**Evidence** (Apple M5, Metal, wgpu 30.0.1, 2026-11-23). The devices are
+requested with exactly the features named, so wgpu validates the core set
+against WebGPU's core formats, accesses and usages:
+
+- `sp-fidelity-wgpu`'s `storage_tests` run FSR2 and the standalone FSR3
+  upscaler for five frames (moving content, depth edges, masks; FP16 and
+  FP32; the application's exposure and auto exposure; sharpening and FSR2's
+  generated reactivity; upscaling, Native AA and a six-mip pyramid) and
+  compare what every compute job wrote, in the SDK's layout. The core set on
+  a device with `FLOAT32_FILTERABLE` alone against the SDK's formats on a
+  device without subgroups, both with SPD split: FSR2 wrote 145, 165, 145 and 155 resources in its four cases and FSR3 335, 335, 335 and 300, every one identical. A second core-set
+  run equals the first, so nothing in it races.
+- SPD split against SPD in one dispatch, same device, in the cases that take the application's exposure: every write of every pass identical, FSR2 and FSR3, apart from
+  the store at the 1×1 mip (`FSR2_AutoExposure`, FSR3's frame info), which is
+  SDK-P14's hand-off: one dispatch reads mip 5 while other workgroups write
+  it. The split's value is the one the completed mip gives; on this adapter
+  the one-dispatch value differs between runs.
+- SPD without wave operations against SPD with them, one dispatch each: the
+  pyramids' mips identical in the same cases, FSR2 and FSR3.
+- `ffxWgslUnorm8` against a typed `R8_UNORM` store and load: 3,593 values on,
+  just under and just over every code and every halfway point, the clamps
+  and a NaN, identical.
+- The pass oracle (the unchanged HLSL on Metal, from the port's inputs of
+  every job) on a core-set device, FSR3's three temporal sequences in FP32
+  and FP16
+  (`all_passes_match_the_unchanged_hlsl_over_temporal_sequences_on_the_core_resource_set`):
+  840 exact dumps and 92 within the exceptions recorded above, with the same
+  maxima as the SDK set's run of the same sequences that day (823 exact, 109
+  differing; the SDK-P14 hand-off varies between runs). FSR2's single-pass
+  oracle tests allocate their own SDK-format textures and were not run on
+  the core set: FSR2's evidence is the equality with the SDK set above.
+- The host oracle is the same on both sets: the substitution is beneath the
+  `FfxInterface`, which sees the SDK's descriptions.
+- Every FSR2 and FSR3 upscaler module of the core set (488 distinct, FP32 and
+  FP16) compiles in Chromium 149's WGSL compiler on the same adapter with `float32-filterable` and `shader-f16`, none with an error.
+
+**Cost.** GPU memory from `ffxFsr2ContextGetGpuMemoryUsage` and its FSR3
+counterpart, for a 1280×720 display and maximum render size: FSR2 70.0 MB on
+the SDK's set and 114.9 MB on the core set; FSR3 42.6 MB and 68.3 MB, its
+three shared textures being the caller's. The depth atomics add two transfer
+passes around FSR2's reconstruct pass (FSR3's prepare-inputs pass), and SPD
+a second, one-workgroup dispatch. FSR2's accumulate also costs what its
+reference Lanczos costs against the lookup wherever the SDK set would have
+selected the lookup (an adapter with 64-wide waves, such as this one), as it
+does on any hardware without them. `examples/upscaler_timing.rs` in
+`sp-fidelity-wgpu` prints each job's GPU time and each context's memory on
+both sets.
+
+**Limits.** Frame generation and optical flow keep the SDK's set. A pass
+binds up to six storage textures (`storage_textures_per_stage`), above
+WebGPU's default limit of four. No Vulkan or DX12 device has run the core
+set; it uses only core WGSL and formats there too, and its two exact store
+functions are integer arithmetic. `quantizeToF16` and a wider float lookup
+are not used because they are not exact (above).
 
 ### SDK-P14 — SPD hand-off between workgroups
 

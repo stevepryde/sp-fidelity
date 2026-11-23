@@ -30,6 +30,9 @@
 
 #if defined(FFX_GPU)
 #include "ffx_core.wgsl"
+#if defined(FFX_WGSL_CORE)
+#include "ffx_core_storage.wgsl"
+#endif
 
 // WGSL: FFX_PREFER_WAVE64 (an optional [WaveSize(64)]) has no WGSL form; see
 // SDK-P6. The DECLARE_*_REGISTER/FFX_FSR2_DECLARE_* register macros are the
@@ -370,8 +373,20 @@ fn SPD_RenderSize() -> FfxUInt32x2
     // @coherent applies to storage buffers only), and WGSL's only texture
     // atomics are the atomic access mode.
     #if defined FSR2_BIND_UAV_RECONSTRUCTED_PREV_NEAREST_DEPTH
+    #if defined(FFX_WGSL_CORE) && defined(FFX_WGSL_RECONSTRUCTED_DEPTH_ATOMICS)
+        // WGSL without texture atomics: the pass that takes the nearest depth
+        // (FFX_WGSL_RECONSTRUCTED_DEPTH_ATOMICS) binds the texture's words as
+        // a storage buffer, one a texel in rows of the maximum render width,
+        // the width ffx_fsr2.cpp creates the texture with. The backend
+        // transfers the texture into it before the pass and back after.
+        @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_RECONSTRUCTED_PREV_NEAREST_DEPTH) var<storage, read_write> rw_reconstructed_previous_nearest_depth: array<atomic<FfxUInt32>>;
+    #elif defined(FFX_WGSL_CORE)
+        // A pass that only stores (the lock pass's clear) needs no atomic.
+        @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_RECONSTRUCTED_PREV_NEAREST_DEPTH) var rw_reconstructed_previous_nearest_depth: texture_storage_2d<r32uint, write>;
+    #else
         // R32_UINT; InterlockedMin/InterlockedMax need the atomic access mode.
         @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_RECONSTRUCTED_PREV_NEAREST_DEPTH) var rw_reconstructed_previous_nearest_depth: texture_storage_2d<r32uint, atomic>;
+    #endif
     #endif
     #if defined FSR2_BIND_UAV_DILATED_MOTION_VECTORS
         @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_DILATED_MOTION_VECTORS) var rw_dilated_motion_vectors: texture_storage_2d<rg16float, write>;
@@ -392,7 +407,13 @@ fn SPD_RenderSize() -> FfxUInt32x2
     #endif
     #if defined FSR2_BIND_UAV_NEW_LOCKS
         // Read (LoadRwNewLocks) and written.
+    #if defined(FFX_WGSL_CORE)
+        // WebGPU's core read-write formats are 32-bit: r32float holds the
+        // value the R8_UNORM texel would return (StoreNewLocks).
+        @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_NEW_LOCKS) var rw_new_locks: texture_storage_2d<r32float, read_write>;
+    #else
         @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_NEW_LOCKS) var rw_new_locks: texture_storage_2d<r8unorm, read_write>;
+    #endif
     #endif
     #if defined FSR2_BIND_UAV_PREPARED_INPUT_COLOR
         @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_PREPARED_INPUT_COLOR) var rw_prepared_input_color: texture_storage_2d<rgba16float, write>;
@@ -408,11 +429,24 @@ fn SPD_RenderSize() -> FfxUInt32x2
     #endif
     #if defined FSR2_BIND_UAV_EXPOSURE_MIP_LUMA_CHANGE
         // globallycoherent in the SDK; mip 4 of FSR2_ExposureMips (R16_FLOAT).
+    #if defined(FFX_WGSL_SPD_PHASE)
+        // A split SPD only writes it, in its first dispatch.
+        @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_EXPOSURE_MIP_LUMA_CHANGE) var rw_img_mip_shading_change: texture_storage_2d<r16float, write>;
+    #else
         @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_EXPOSURE_MIP_LUMA_CHANGE) var rw_img_mip_shading_change: texture_storage_2d<r16float, read_write>;
+    #endif
     #endif
     #if defined FSR2_BIND_UAV_EXPOSURE_MIP_5
         // globallycoherent in the SDK; mip 5 of FSR2_ExposureMips (R16_FLOAT).
+    #if FFX_WGSL_SPD_PHASE == 1
+        // A split SPD writes it in its first dispatch and reads it in its
+        // second, so neither needs a read-write texture.
+        @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_EXPOSURE_MIP_5) var rw_img_mip_5: texture_storage_2d<r16float, write>;
+    #elif FFX_WGSL_SPD_PHASE == 2
+        @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_EXPOSURE_MIP_5) var rw_img_mip_5: texture_storage_2d<r16float, read>;
+    #else
         @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_EXPOSURE_MIP_5) var rw_img_mip_5: texture_storage_2d<r16float, read_write>;
+    #endif
     #endif
     #if defined FSR2_BIND_UAV_DILATED_REACTIVE_MASKS
         @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_DILATED_REACTIVE_MASKS) var rw_dilated_reactive_masks: texture_storage_2d<rg8unorm, write>;
@@ -427,7 +461,13 @@ fn SPD_RenderSize() -> FfxUInt32x2
         // no read-write R32G32_FLOAT storage texture; the wgpu backend
         // allocates R32G32_FLOAT UAV resources as RGBA32Float, and the port
         // uses .xy.
+    #if defined(FFX_WGSL_CORE)
+        // WebGPU's core read-write formats have one component: the backend
+        // allocates the 1x1 texture as r32float 2x1, a texel a component.
+        @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_AUTO_EXPOSURE) var rw_auto_exposure: texture_storage_2d<r32float, read_write>;
+    #else
         @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR2_BIND_UAV_AUTO_EXPOSURE) var rw_auto_exposure: texture_storage_2d<rgba32float, read_write>;
+    #endif
     #endif
     #if defined FSR2_BIND_UAV_SPD_GLOBAL_ATOMIC
         // FSR2_SpdAtomicCounter, a globallycoherent RWTexture2D<FfxUInt32> on a
@@ -698,7 +738,11 @@ fn StoreNewLocks(iPxPos: FfxUInt32x2, newLock: FfxFloat32)
     if (ffxWgslOutside(FfxInt32x2(iPxPos), textureDimensions(rw_new_locks))) {
         return;
     }
+#if defined(FFX_WGSL_CORE)
+    textureStore(rw_new_locks, iPxPos, FfxFloat32x4(ffxWgslUnorm8(newLock)));
+#else
     textureStore(rw_new_locks, iPxPos, FfxFloat32x4(newLock));
+#endif
 }
 #endif
 
@@ -739,10 +783,35 @@ fn LoadReconstructedPrevDepth(iPxPos: FfxUInt32x2) -> FfxFloat32
 #endif
 
 #if defined(FSR2_BIND_UAV_RECONSTRUCTED_PREV_NEAREST_DEPTH)
+#if defined(FFX_WGSL_CORE) && defined(FFX_WGSL_RECONSTRUCTED_DEPTH_ATOMICS)
 fn StoreReconstructedDepth(iPxSample: FfxUInt32x2, fDepth: FfxFloat32)
 {
     let uDepth: FfxUInt32 = bitcast<FfxUInt32>(fDepth);
+    // WGSL: the buffer has no rows; a position outside the texture would
+    // land on another texel's word.
+    if (ffxWgslOutside(FfxInt32x2(iPxSample), FfxUInt32x2(MaxRenderSize()))) {
+        return;
+    }
+    let uTexel: FfxUInt32 = iPxSample.y * FfxUInt32(MaxRenderSize().x) + iPxSample.x;
+    #if FFX_FSR2_OPTION_INVERTED_DEPTH
+        atomicMax(&rw_reconstructed_previous_nearest_depth[uTexel], uDepth);
+    #else
+        atomicMin(&rw_reconstructed_previous_nearest_depth[uTexel], uDepth); // min for standard, max for inverted depth
+    #endif
+}
 
+fn SetReconstructedDepth(iPxSample: FfxUInt32x2, uValue: FfxUInt32)
+{
+    if (ffxWgslOutside(FfxInt32x2(iPxSample), FfxUInt32x2(MaxRenderSize()))) {
+        return;
+    }
+    atomicStore(&rw_reconstructed_previous_nearest_depth[iPxSample.y * FfxUInt32(MaxRenderSize().x) + iPxSample.x], uValue);
+}
+#else
+#if !defined(FFX_WGSL_CORE)
+fn StoreReconstructedDepth(iPxSample: FfxUInt32x2, fDepth: FfxFloat32)
+{
+    let uDepth: FfxUInt32 = bitcast<FfxUInt32>(fDepth);
     // WGSL: an atomic outside the texture is undefined; HLSL's does nothing.
     if (ffxWgslOutside(FfxInt32x2(iPxSample), textureDimensions(rw_reconstructed_previous_nearest_depth))) {
         return;
@@ -755,7 +824,6 @@ fn StoreReconstructedDepth(iPxSample: FfxUInt32x2, fDepth: FfxFloat32)
 }
 #endif
 
-#if defined(FSR2_BIND_UAV_RECONSTRUCTED_PREV_NEAREST_DEPTH)
 fn SetReconstructedDepth(iPxSample: FfxUInt32x2, uValue: FfxUInt32)
 {
     if (ffxWgslOutside(FfxInt32x2(iPxSample), textureDimensions(rw_reconstructed_previous_nearest_depth))) {
@@ -764,7 +832,7 @@ fn SetReconstructedDepth(iPxSample: FfxUInt32x2, uValue: FfxUInt32)
     textureStore(rw_reconstructed_previous_nearest_depth, iPxSample, FfxUInt32x4(uValue));
 }
 #endif
-
+#endif
 #if defined(FSR2_BIND_UAV_DILATED_DEPTH)
 fn StoreDilatedDepth(iPxPos: FfxUInt32x2, fDepth: FfxFloat32)
 {
@@ -944,7 +1012,11 @@ fn StorePrevPreAlpha(iPxPos: FFX_MIN16_I2, color: FFX_MIN16_F3)
     if (ffxWgslOutside(FfxInt32x2(iPxPos), textureDimensions(rw_output_prev_color_pre_alpha))) {
         return;
     }
+#if defined(FFX_WGSL_CORE)
+    textureStore(rw_output_prev_color_pre_alpha, iPxPos, FfxFloat32x4(ffxWgslR11G11B10Float(FfxFloat32x3(color)), 0.0f));
+#else
     textureStore(rw_output_prev_color_pre_alpha, iPxPos, FfxFloat32x4(FfxFloat32x3(color), 0.0f));
+#endif
 
 }
 #endif
@@ -955,13 +1027,19 @@ fn StorePrevPostAlpha(iPxPos: FFX_MIN16_I2, color: FFX_MIN16_F3)
     if (ffxWgslOutside(FfxInt32x2(iPxPos), textureDimensions(rw_output_prev_color_post_alpha))) {
         return;
     }
+#if defined(FFX_WGSL_CORE)
+    textureStore(rw_output_prev_color_post_alpha, iPxPos, FfxFloat32x4(ffxWgslR11G11B10Float(FfxFloat32x3(color)), 0.0f));
+#else
     textureStore(rw_output_prev_color_post_alpha, iPxPos, FfxFloat32x4(FfxFloat32x3(color), 0.0f));
+#endif
 }
 #endif
 
 fn SPD_LoadExposureBuffer() -> FfxFloat32x2
 {
-#if defined FSR2_BIND_UAV_AUTO_EXPOSURE
+#if defined(FSR2_BIND_UAV_AUTO_EXPOSURE) && defined(FFX_WGSL_CORE)
+    return FfxFloat32x2(textureLoad(rw_auto_exposure, FfxInt32x2(0, 0)).x, textureLoad(rw_auto_exposure, FfxInt32x2(1, 0)).x);
+#elif defined FSR2_BIND_UAV_AUTO_EXPOSURE
     return textureLoad(rw_auto_exposure, FfxInt32x2(0, 0)).xy;
 #else
     return FfxFloat32x2(0.f, 0.f);
@@ -970,14 +1048,20 @@ fn SPD_LoadExposureBuffer() -> FfxFloat32x2
 
 fn SPD_SetExposureBuffer(value: FfxFloat32x2)
 {
-#if defined FSR2_BIND_UAV_AUTO_EXPOSURE
+#if defined(FSR2_BIND_UAV_AUTO_EXPOSURE) && defined(FFX_WGSL_CORE)
+    textureStore(rw_auto_exposure, FfxInt32x2(0, 0), FfxFloat32x4(value.x));
+    textureStore(rw_auto_exposure, FfxInt32x2(1, 0), FfxFloat32x4(value.y));
+#elif defined FSR2_BIND_UAV_AUTO_EXPOSURE
     textureStore(rw_auto_exposure, FfxInt32x2(0, 0), FfxFloat32x4(value, 0.0f, 0.0f));
 #endif // #if defined FSR2_BIND_UAV_AUTO_EXPOSURE
 }
 
 fn SPD_LoadMipmap5(iPxPos: FfxInt32x2) -> FfxFloat32x4
 {
-#if defined FSR2_BIND_UAV_EXPOSURE_MIP_5
+#if FFX_WGSL_SPD_PHASE == 1
+    // SPD loads mip 5 in its second dispatch only (SpdDownsampleMips_6_7).
+    return FfxFloat32x4(0.f, 0.f, 0.f, 0.f);
+#elif defined FSR2_BIND_UAV_EXPOSURE_MIP_5
     var value: FfxFloat32 = 0.0f;
     if (!ffxWgslOutside(iPxPos, textureDimensions(rw_img_mip_5))) {
         value = textureLoad(rw_img_mip_5, iPxPos).x;
@@ -988,6 +1072,39 @@ fn SPD_LoadMipmap5(iPxPos: FfxInt32x2) -> FfxFloat32x4
 #endif // #if defined FSR2_BIND_UAV_EXPOSURE_MIP_5
 }
 
+#if FFX_WGSL_SPD_PHASE == 2
+// SPD stores mips 4 and 5 in its first dispatch only: the second begins at
+// mip 6, and SpdStore passes no other mip here.
+fn SPD_SetMipmap(iPxPos: FfxInt32x2, slice: FfxUInt32, value: FfxFloat32)
+{
+}
+#elif FFX_WGSL_SPD_PHASE == 1
+// As below without the default case, which reads the texel it stores and so
+// needs a read-write texture; SpdStore passes only mips 4 and 5, so the SDK
+// never takes it.
+fn SPD_SetMipmap(iPxPos: FfxInt32x2, slice: FfxUInt32, value: FfxFloat32)
+{
+    switch (slice)
+    {
+    case FFX_FSR2_SHADING_CHANGE_MIP_LEVEL: {
+#if defined FSR2_BIND_UAV_EXPOSURE_MIP_LUMA_CHANGE
+        if (!ffxWgslOutside(iPxPos, textureDimensions(rw_img_mip_shading_change))) {
+            textureStore(rw_img_mip_shading_change, iPxPos, FfxFloat32x4(value));
+        }
+#endif // #if defined FSR2_BIND_UAV_EXPOSURE_MIP_LUMA_CHANGE
+    }
+    case 5u: {
+#if defined FSR2_BIND_UAV_EXPOSURE_MIP_5
+        if (!ffxWgslOutside(iPxPos, textureDimensions(rw_img_mip_5))) {
+            textureStore(rw_img_mip_5, iPxPos, FfxFloat32x4(value));
+        }
+#endif // #if defined FSR2_BIND_UAV_EXPOSURE_MIP_5
+    }
+    default: {
+    }
+    }
+}
+#else
 fn SPD_SetMipmap(iPxPos: FfxInt32x2, slice: FfxUInt32, value: FfxFloat32)
 {
     switch (slice)
@@ -1021,6 +1138,7 @@ fn SPD_SetMipmap(iPxPos: FfxInt32x2, slice: FfxUInt32, value: FfxFloat32)
     }
     }
 }
+#endif // #if FFX_WGSL_SPD_PHASE == 2
 
 // WGSL: texel (0, 0) of the SDK's 1x1 texture is element 0 of the buffer,
 // which wgpu binds with at least one element.

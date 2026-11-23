@@ -22,6 +22,7 @@ macro_rules! modules {
 const MODULES: &[(&str, &str)] = modules![
     "ffx_core.wgsl",
     "ffx_core_lane_math.wgsl",
+    "ffx_core_storage.wgsl",
     "denoiser/ffx_denoiser_prefilter_reflections_pass.wgsl",
     "denoiser/ffx_denoiser_reflections_callbacks.wgsl",
     "denoiser/ffx_denoiser_reflections_common.wgsl",
@@ -235,6 +236,77 @@ pub fn ffx_get_wgsl_source(blob: &FfxShaderBlob) -> Option<String> {
     assemble_wgsl(blob, &[])
 }
 
+/// What a backend's device lets an FSR2 or FSR3 upscaler pass use. The
+/// default is the SDK's own resource set, the source [`ffx_get_wgsl_source`]
+/// returns.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FfxWgslUpscalerOptions {
+    /// The pass is for a device with WebGPU's core features only, as a
+    /// browser's is, and for a compiler that holds to WGSL's specification
+    /// (`FFX_WGSL_CORE`). Storage textures stay within the core formats and
+    /// accesses, and atomics within storage buffers:
+    ///
+    /// - the reconstructed previous depth is a storage buffer of
+    ///   `atomic<u32>`, one word a texel in rows of the maximum render width,
+    ///   in the pass that takes its minimum or maximum;
+    /// - a read-write `R8_UNORM` texture (the new locks) is `r32float`
+    ///   holding the value the unorm texel would return;
+    /// - a read-write 1x1 `R32G32_FLOAT` or `R32G32B32A32_FLOAT` texture
+    ///   (auto exposure, frame info) is `r32float` with a texel a component;
+    /// - an `R11G11B10_FLOAT` store truncates to that format's precision,
+    ///   for a backend that allocates it as `rgba16float`.
+    ///
+    /// Narrow write-only storage formats keep the SDK's declarations; the
+    /// backend that widens their allocation rewrites them. No constant
+    /// expression is infinite, which the specification rejects.
+    pub core: bool,
+    /// SPD reduces without wave operations (the SDK's
+    /// `FFX_SPD_NO_WAVE_OPERATIONS`), and no subgroup built-in is declared.
+    pub no_wave_operations: bool,
+    /// SPD's dispatch of [`FfxWgslSpdPhase`], for a backend that splits it.
+    pub spd_phase: Option<FfxWgslSpdPhase>,
+}
+
+/// One of the two dispatches a backend splits SPD into where a mip cannot be
+/// bound read-write (SDK-P14's schedule): the tiles, then the reduction of
+/// what they wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FfxWgslSpdPhase {
+    /// Every workgroup reduces its tile into mips 0 to 5, which the pass
+    /// only writes.
+    Tiles,
+    /// One workgroup reduces mip 5, which the pass only reads, into the
+    /// mips above it.
+    Tail,
+}
+
+/// As [`ffx_get_wgsl_source`], for an FSR2 or FSR3 upscaler pass assembled
+/// for `options`. `None` for any other effect's blob.
+pub fn ffx_get_upscaler_wgsl_source(
+    blob: &FfxShaderBlob,
+    options: FfxWgslUpscalerOptions,
+) -> Option<String> {
+    if !["ffx_fsr2_", "ffx_fsr3upscaler_"]
+        .iter()
+        .any(|prefix| blob.shader_name.starts_with(prefix))
+    {
+        return None;
+    }
+    let mut defines = Vec::new();
+    if options.core {
+        defines.push(("FFX_WGSL_CORE", "1"));
+    }
+    if options.no_wave_operations {
+        defines.push(("FFX_SPD_NO_WAVE_OPERATIONS", "1"));
+    }
+    match options.spd_phase {
+        Some(FfxWgslSpdPhase::Tiles) => defines.push(("FFX_WGSL_SPD_PHASE", "1")),
+        Some(FfxWgslSpdPhase::Tail) => defines.push(("FFX_WGSL_SPD_PHASE", "2")),
+        None => {}
+    }
+    assemble_wgsl(blob, &defines)
+}
+
 /// Assemble a reflection pass for the storage formats supported by a WebGPU device.
 /// Widening uses RGBA16Float for R16Float scalar targets and/or packed average
 /// radiance. The latter retains the SDK format's RGB precision before filtering.
@@ -248,17 +320,21 @@ pub fn ffx_get_denoiser_wgsl_source(
     if !blob.shader_name.starts_with("ffx_denoiser_") {
         return None;
     }
+    let flag = |on: bool| if on { "1" } else { "0" };
     assemble_wgsl(
         blob,
         &[
-            ("FFX_WGSL_DENOISER_WIDEN_SCALAR", widen_scalar),
-            ("FFX_WGSL_DENOISER_WIDEN_AVERAGE", widen_average),
-            ("FFX_WGSL_DENOISER_MANUAL_DEPTH_FILTER", !filterable_depth),
+            ("FFX_WGSL_DENOISER_WIDEN_SCALAR", flag(widen_scalar)),
+            ("FFX_WGSL_DENOISER_WIDEN_AVERAGE", flag(widen_average)),
+            (
+                "FFX_WGSL_DENOISER_MANUAL_DEPTH_FILTER",
+                flag(!filterable_depth),
+            ),
         ],
     )
 }
 
-fn assemble_wgsl(blob: &FfxShaderBlob, backend_defines: &[(&str, bool)]) -> Option<String> {
+fn assemble_wgsl(blob: &FfxShaderBlob, backend_defines: &[(&str, &str)]) -> Option<String> {
     let file = format!("{}.wgsl", blob.shader_name);
     let (module, _) = MODULES
         .iter()
@@ -279,7 +355,7 @@ fn assemble_wgsl(blob: &FfxShaderBlob, backend_defines: &[(&str, bool)]) -> Opti
     for &(name, value) in backend_defines {
         preprocessor
             .defines
-            .insert(name.to_owned(), u8::from(value).to_string());
+            .insert(name.to_owned(), value.to_owned());
     }
     for (prefix, defines) in EFFECT_DEFINES {
         if blob.shader_name.starts_with(prefix) {
