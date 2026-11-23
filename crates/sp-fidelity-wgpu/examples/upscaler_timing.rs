@@ -1,7 +1,9 @@
 //! GPU time of each FSR2 and FSR3 upscaler pass, and each context's GPU
-//! memory, on both resource sets: the SDK's on a device with
-//! `required_features()`, and the core set on one with
-//! `core_required_features()` alone, as a browser's has.
+//! memory, on each resource set: the SDK's on a device with
+//! `required_features()`, the SDK-formats set on one with
+//! `sdk_formats_required_features()` (a browser with
+//! `texture-formats-tier2`), and the core set on one with
+//! `core_required_features()` alone.
 //!
 //! ```sh
 //! cargo run -p sp-fidelity-wgpu --release --example upscaler_timing [-- WIDTHxHEIGHT]
@@ -10,7 +12,8 @@
 //! Each line gives a context at that display size (and maximum render size)
 //! at Native AA or Quality: the median of each compute job's timestamp pair
 //! over the measured frames, which spans both of a split SPD's dispatches;
-//! the core set's two transfer passes around the depth atomics are not timed.
+//! the reduced sets' two transfer passes around the depth atomics are not
+//! timed.
 //! Needs `TIMESTAMP_QUERY`. A measurement, not a test: run it on a quiet
 //! machine.
 #![cfg_attr(target_arch = "wasm32", allow(unused))]
@@ -20,7 +23,7 @@ use sp_fidelity::types::*;
 use sp_fidelity_wgpu::readback::Readback;
 use sp_fidelity_wgpu::{
     FfxWgpuPassTimestamps, core_required_features, ffx_get_interface_wgpu, optional_features,
-    required_features,
+    required_features, sdk_formats_required_features,
 };
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -68,8 +71,9 @@ fn main() {
         display[1]
     );
     for (set, features) in [
-        ("SDK set ", required_features()),
-        ("core set", core_required_features()),
+        ("SDK set    ", required_features()),
+        ("SDK formats", sdk_formats_required_features()),
+        ("core set   ", core_required_features()),
     ] {
         let features = features | (adapter.features() & optional_features());
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {

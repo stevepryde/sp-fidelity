@@ -160,35 +160,9 @@ pub fn compare(
     let _ = fs::remove_dir_all(&directory);
     let (mut original, original_data) = cpp(effect, caps, words, &directory);
     let (port, port_data) = rust(caps, words);
-    if effect.name == "opticalflow" {
-        // The SDK stages OpticalFlowSpdConstants' three uninitialized padding
-        // words. They have no shader meaning; retain every initialized word.
-        let mut staged = 0;
-        for event in &mut original {
-            if event[0] == "frame" {
-                staged = 0;
-            }
-            if event[0] == "constants" {
-                staged += 1;
-                // dispatch() stages cbOF then OpticalFlowSpdConstants before
-                // scheduling any pass. DXC drops the unused SPD binding.
-                if staged == 2 {
-                    for word in &mut event[1].as_array_mut().unwrap()[5..8] {
-                        *word = json!(0);
-                    }
-                }
-            }
-            if event[0] == "compute" {
-                for cb in event[6].as_array_mut().unwrap() {
-                    if cb[0] == "cbOF_SPD" {
-                        for word in &mut cb[1].as_array_mut().unwrap()[5..8] {
-                            *word = json!(0);
-                        }
-                    }
-                }
-            }
-        }
-    }
+    // By layout: OpticalFlowSpdConstants' padding words, which the SDK leaves
+    // uninitialized.
+    sp_fidelity_oracle::host::clear_constant_padding(&mut original);
     for (index, (c, r)) in original.iter().zip(&port).enumerate() {
         assert_eq!(
             c,

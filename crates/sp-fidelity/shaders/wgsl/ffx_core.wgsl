@@ -923,7 +923,7 @@ fn ffxLinearFromPQ_f32x3(value: FfxFloat32x3) -> FfxFloat32x3 {
 fn ffxLinearFromSrgb_f32x3(value: FfxFloat32x3) -> FfxFloat32x3 {
     let j = FfxFloat32x3(0.04045, 1.0 / 12.92, 2.4);
     let k = FfxFloat32x2(1.0 / 1.055, 0.055 / 1.055);
-#if defined(FFX_WGSL_CORE)
+#if defined(FFX_WGSL_STRICT)
     // WGSL's specification rejects a constant expression that is infinite;
     // the same bits through a variable are not one.
     var negative_infinity: FfxUInt32 = 0xff800000u;

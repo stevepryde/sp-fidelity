@@ -308,10 +308,13 @@ pub fn compare(name: &str, capabilities: FfxDeviceCapabilities, words: &[u32]) {
         &directory.join("input.words"),
         &init_data,
     );
-    let cpp: Vec<Value> = output
+    let mut cpp: Vec<Value> = output
         .lines()
         .map(|line| serde_json::from_str(line).unwrap_or_else(|e| panic!("{line}: {e}")))
         .collect();
+    // By layout: OpticalFlowSpdConstants' padding words, which the SDK leaves
+    // uninitialized.
+    sp_fidelity_oracle::host::clear_constant_padding(&mut cpp);
     let (rust, rust_data) = run_rust(capabilities, words);
     fs::write(directory.join("cpp.jsonl"), output).unwrap();
     fs::write(

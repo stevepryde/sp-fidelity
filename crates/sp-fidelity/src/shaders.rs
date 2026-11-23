@@ -241,14 +241,9 @@ pub fn ffx_get_wgsl_source(blob: &FfxShaderBlob) -> Option<String> {
 /// returns.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FfxWgslUpscalerOptions {
-    /// The pass is for a device with WebGPU's core features only, as a
-    /// browser's is, and for a compiler that holds to WGSL's specification
-    /// (`FFX_WGSL_CORE`). Storage textures stay within the core formats and
-    /// accesses, and atomics within storage buffers:
+    /// Storage textures stay within WebGPU's core formats and accesses
+    /// (`FFX_WGSL_CORE_FORMATS`):
     ///
-    /// - the reconstructed previous depth is a storage buffer of
-    ///   `atomic<u32>`, one word a texel in rows of the maximum render width,
-    ///   in the pass that takes its minimum or maximum;
     /// - a read-write `R8_UNORM` texture (the new locks) is `r32float`
     ///   holding the value the unorm texel would return;
     /// - a read-write 1x1 `R32G32_FLOAT` or `R32G32B32A32_FLOAT` texture
@@ -257,9 +252,19 @@ pub struct FfxWgslUpscalerOptions {
     ///   for a backend that allocates it as `rgba16float`.
     ///
     /// Narrow write-only storage formats keep the SDK's declarations; the
-    /// backend that widens their allocation rewrites them. No constant
-    /// expression is infinite, which the specification rejects.
-    pub core: bool,
+    /// backend that widens their allocation rewrites them.
+    pub core_formats: bool,
+    /// Atomics stay within storage buffers (`FFX_WGSL_BUFFER_ATOMICS`): the
+    /// reconstructed previous depth is a storage buffer of `atomic<u32>`, one
+    /// word a texel in rows of the maximum render width, in the pass that
+    /// takes its minimum or maximum, and a write-only texture where a pass
+    /// only stores to it.
+    pub buffer_atomics: bool,
+    /// The source holds to what WGSL's specification requires where naga is
+    /// more lenient, for a browser's compiler (`FFX_WGSL_STRICT`): no
+    /// constant expression is infinite, and no call passes two written
+    /// pointers into one variable. The arithmetic is the same.
+    pub strict: bool,
     /// SPD reduces without wave operations (the SDK's
     /// `FFX_SPD_NO_WAVE_OPERATIONS`), and no subgroup built-in is declared.
     pub no_wave_operations: bool,
@@ -267,9 +272,11 @@ pub struct FfxWgslUpscalerOptions {
     pub spd_phase: Option<FfxWgslSpdPhase>,
 }
 
-/// One of the two dispatches a backend splits SPD into where a mip cannot be
-/// bound read-write (SDK-P14's schedule): the tiles, then the reduction of
-/// what they wrote.
+/// One of the two dispatches a backend splits SPD into (SDK-P14's schedule):
+/// the tiles, then the reduction of what they wrote. WGSL has no device-wide
+/// hand-off between workgroups, so the reduction above mip 5 can only see
+/// every tile's writes after a dispatch boundary, and each dispatch binds the
+/// mips write-only or read-only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FfxWgslSpdPhase {
     /// Every workgroup reduces its tile into mips 0 to 5, which the pass
@@ -293,8 +300,14 @@ pub fn ffx_get_upscaler_wgsl_source(
         return None;
     }
     let mut defines = Vec::new();
-    if options.core {
-        defines.push(("FFX_WGSL_CORE", "1"));
+    for (on, define) in [
+        (options.core_formats, "FFX_WGSL_CORE_FORMATS"),
+        (options.buffer_atomics, "FFX_WGSL_BUFFER_ATOMICS"),
+        (options.strict, "FFX_WGSL_STRICT"),
+    ] {
+        if on {
+            defines.push((define, "1"));
+        }
     }
     if options.no_wave_operations {
         defines.push(("FFX_SPD_NO_WAVE_OPERATIONS", "1"));

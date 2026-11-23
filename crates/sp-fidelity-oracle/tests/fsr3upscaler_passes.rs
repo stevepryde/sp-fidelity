@@ -15,7 +15,7 @@ use sp_fidelity::shaders::ffx_get_wgsl_source;
 use sp_fidelity::types::*;
 use sp_fidelity_oracle::gpu::{self, Capture, Input};
 use sp_fidelity_oracle::{FSR3UPSCALER, compare, pass};
-use sp_fidelity_wgpu::ffx_get_interface_wgpu;
+use sp_fidelity_wgpu::{FfxWgpuResourceSet, ffx_get_interface_wgpu};
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,8 +29,9 @@ fn texture(
     size: (u32, u32),
     format: wgpu::TextureFormat,
     writable: bool,
-    core: bool,
+    set: FfxWgpuResourceSet,
 ) -> wgpu::Texture {
+    let core = set == FfxWgpuResourceSet::Core;
     let format = match format {
         wgpu::TextureFormat::Rg16Float if writable && core => wgpu::TextureFormat::Rgba16Float,
         wgpu::TextureFormat::R8Unorm if writable && core => wgpu::TextureFormat::Rgba8Unorm,
@@ -52,7 +53,7 @@ fn texture(
             | wgpu::TextureUsages::COPY_DST
             | if writable {
                 wgpu::TextureUsages::STORAGE_BINDING
-                    | if format == wgpu::TextureFormat::R32Uint && !core {
+                    | if format == wgpu::TextureFormat::R32Uint && set == FfxWgpuResourceSet::Sdk {
                         wgpu::TextureUsages::STORAGE_ATOMIC
                     } else {
                         wgpu::TextureUsages::empty()
@@ -231,8 +232,13 @@ impl Application {
             inputs: resources
                 .into_iter()
                 .map(|(name, size, format, native_format, bytes, writable)| {
-                    let texture =
-                        texture(&gpu.device, size, native_format, writable, gpu.is_core());
+                    let texture = texture(
+                        &gpu.device,
+                        size,
+                        native_format,
+                        writable,
+                        gpu.resource_set(),
+                    );
                     gpu::upload(
                         &gpu.queue,
                         &texture,
@@ -701,13 +707,22 @@ fn all_passes_match_the_unchanged_hlsl_over_temporal_sequences() {
 }
 
 /// The same sequences on a device with only the core resource set's
-/// features, as a browser's has: the backend's core formats, buffer atomics
-/// and two-dispatch SPD against the unchanged HLSL, each dump in the SDK's
-/// layout.
+/// features, as a browser's without `texture-formats-tier2` has: the
+/// backend's core formats, buffer atomics and two-dispatch SPD against the
+/// unchanged HLSL, each dump in the SDK's layout.
 #[test]
 #[ignore = "needs Metal, clang++ and compiled FSR 3.1 shader variants"]
 fn all_passes_match_the_unchanged_hlsl_over_temporal_sequences_on_the_core_resource_set() {
     temporal_sequences(gpu::Gpu::core, "-core");
+}
+
+/// The same sequences on a device with only the SDK-formats resource set's
+/// features, as a browser's with `texture-formats-tier2` has: the SDK's
+/// formats, buffer atomics and two-dispatch SPD.
+#[test]
+#[ignore = "needs Metal, clang++ and compiled FSR 3.1 shader variants"]
+fn all_passes_match_the_unchanged_hlsl_over_temporal_sequences_on_the_sdk_formats_resource_set() {
+    temporal_sequences(gpu::Gpu::sdk_formats, "-sdk-formats");
 }
 
 fn temporal_sequences(device: fn(bool) -> gpu::Gpu, suffix: &str) {

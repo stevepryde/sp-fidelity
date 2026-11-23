@@ -30,14 +30,13 @@
 //! `Rgba32Float` (Metal has no read-write `Rg32Float` storage texture) and a
 //! storage buffer backing a texture that a pipeline binds as a buffer (WGSL
 //! texture atomics return nothing; see `FfxWgpuBackend::back_buffer_bindings`)
-//! and the two-dispatch FI SPD handoff (SDK-P14), plus a job that fails
+//! and the two-dispatch SPD hand-off (SDK-P14), plus a job that fails
 //! before recording its new views or bind group when
 //! wgpu rejects one, stopping the jobs after it (SDK-P28: wgpu would
 //! invalidate the caller's whole encoder; see
-//! [`FfxWgpuBackend::take_job_error`]), and the core resource set of FSR2 and
-//! the FSR3 upscaler on a device without the SDK's storage formats and
-//! texture atomics, a browser's among them (SDK-P38, `storage.rs`). Nothing
-//! else differs from the SDK.
+//! [`FfxWgpuBackend::take_job_error`]), and the reduced resource sets of FSR2
+//! and the FSR3 upscaler on a device without texture atomics, a browser's
+//! among them (SDK-P38, `storage.rs`). Nothing else differs from the SDK.
 use sp_fidelity::blob_accessors::ffx_get_permutation_blob_by_index;
 use sp_fidelity::error::*;
 #[cfg(feature = "frame-generation")]
@@ -68,8 +67,8 @@ pub use storage::{ffx_sdk_texels_wgpu, ffx_texels_from_sdk_wgpu};
 
 /// The wgpu features with which FSR upscaling and frame generation run as
 /// the SDK allocates and dispatches them. FSR2 and FSR3 upscaling also run
-/// with [`core_required_features`] alone, on the core resource set
-/// ([`features_for`]). The reflections denoiser runs with core WebGPU
+/// with [`sdk_formats_required_features`] or [`core_required_features`]
+/// alone, on a reduced resource set ([`features_for`]). The reflections denoiser runs with core WebGPU
 /// features. [`optional_features`] adds the FP16 permutations.
 ///
 /// Derived from the FSR2 WGSL (`fsr2/ffx_fsr2_callbacks.wgsl`) and the
@@ -94,24 +93,32 @@ pub fn required_features() -> wgpu::Features {
 /// The features FSR2 and FSR3 upscaling need on any device:
 /// `FLOAT32_FILTERABLE`, as in [`required_features`]. With no more than
 /// these, which a browser's WebGPU can grant, the backend runs them on the
-/// core resource set: storage textures in WebGPU's core formats and accesses,
-/// atomics in a storage buffer, and SPD without wave operations in two
-/// dispatches (README, "Resource sets"). Frame generation needs
-/// [`required_features`].
+/// core resource set ([`FfxWgpuResourceSet::Core`], README "Resource sets").
+/// Frame generation needs [`required_features`].
 pub fn core_required_features() -> wgpu::Features {
     wgpu::Features::FLOAT32_FILTERABLE
 }
 
+/// The features of the SDK-formats resource set
+/// ([`FfxWgpuResourceSet::SdkFormats`]): [`core_required_features`] and
+/// `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`, for the SDK's storage formats
+/// and read-write accesses, which a browser's WebGPU grants with
+/// `texture-formats-tier2` where its wgpu backend maps that feature.
+pub fn sdk_formats_required_features() -> wgpu::Features {
+    wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES | core_required_features()
+}
+
 /// The features to request for FSR2 and FSR3 upscaling from an adapter with
-/// `available`: [`required_features`] where it has them all, so the SDK's
-/// resource set runs as the SDK dispatches it; those without `SUBGROUP` where
-/// it lacks only subgroups (the SDK's formats, SPD without wave operations);
-/// otherwise [`core_required_features`]; `None` where it lacks those too. Add
-/// [`optional_features`] the adapter has.
+/// `available`, the first of these it has: [`required_features`], so the
+/// SDK's resource set runs as the SDK dispatches it; those without `SUBGROUP`
+/// (the SDK's set, SPD without wave operations);
+/// [`sdk_formats_required_features`]; [`core_required_features`]. `None`
+/// where it has none of them. Add [`optional_features`] the adapter has.
 pub fn features_for(available: wgpu::Features) -> Option<wgpu::Features> {
     [
         required_features(),
         required_features() - wgpu::Features::SUBGROUP,
+        sdk_formats_required_features(),
         core_required_features(),
     ]
     .into_iter()
@@ -120,7 +127,7 @@ pub fn features_for(available: wgpu::Features) -> Option<wgpu::Features> {
 
 /// The most storage textures one pass of FSR2 (`FfxEffect::Fsr2`: 5, in
 /// accumulate) or of the FSR3 upscaler (`FfxEffect::Fsr3Upscaler`: 6, the
-/// shading-change pyramid's mips) binds, on either resource set. A device
+/// shading-change pyramid's mips) binds, on any resource set. A device
 /// needs at least this `max_storage_textures_per_shader_stage`, where
 /// WebGPU's default is 4. `None` for an effect this does not state it for.
 pub fn storage_textures_per_stage(effect: FfxEffect) -> Option<u32> {
@@ -131,41 +138,70 @@ pub fn storage_textures_per_stage(effect: FfxEffect) -> Option<u32> {
     }
 }
 
-/// The features of the SDK's storage formats and texture atomics. A device
-/// with all of them gets the SDK's resource set; any other, the core set.
+/// How the backend allocates and binds FSR2's and the FSR3 upscaler's
+/// resources on a device ([`resource_set`]). Every set writes, pass for
+/// pass, what the SDK's formats hold (README "Resource sets"; SDK-P38).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FfxWgpuResourceSet {
+    /// The SDK's formats, read-write accesses and texture atomics: a device
+    /// with `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`, `TEXTURE_ATOMIC` and
+    /// `TEXTURE_FORMAT_16BIT_NORM`. SPD uses wave operations where the
+    /// device also has `SUBGROUP`.
+    Sdk,
+    /// The SDK's storage formats and read-write accesses, the reconstructed
+    /// depth's atomics in a storage buffer, and the `R16_SNORM` lookups as
+    /// `R32Float`: a device with `TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`
+    /// but not the others, as a browser with `texture-formats-tier2` is.
+    SdkFormats,
+    /// WebGPU's core storage formats and accesses, the atomics in a storage
+    /// buffer: any other device.
+    Core,
+}
+
+/// The resource set the backend runs FSR2 and the FSR3 upscaler on for a
+/// device with `features`.
+pub fn resource_set(features: wgpu::Features) -> FfxWgpuResourceSet {
+    if features.contains(sdk_storage_features()) {
+        FfxWgpuResourceSet::Sdk
+    } else if features.contains(wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES) {
+        FfxWgpuResourceSet::SdkFormats
+    } else {
+        FfxWgpuResourceSet::Core
+    }
+}
+
+/// The features of the SDK's storage formats and texture atomics.
 fn sdk_storage_features() -> wgpu::Features {
     wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES
         | wgpu::Features::TEXTURE_ATOMIC
         | wgpu::Features::TEXTURE_FORMAT_16BIT_NORM
 }
 
-/// What the device lets FSR2 and FSR3 use, each from its own features, as
+/// What the device lets FSR2 and FSR3 use, from its own features, as
 /// `fp16Supported` is from `SHADER_F16`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Capabilities {
-    /// The SDK's storage formats, read-write accesses and texture atomics;
-    /// otherwise the core resource set (`storage`).
-    sdk_storage: bool,
+    set: FfxWgpuResourceSet,
     /// Subgroups on the SDK's resource set, for SPD's wave operations;
     /// otherwise the SDK's `FFX_SPD_NO_WAVE_OPERATIONS`, and no wave lanes
-    /// reported (`get_device_capabilities`).
+    /// reported (`get_device_capabilities`). The other sets are a browser's,
+    /// whose compiler takes no subgroup built-in without an extension naga
+    /// does not parse.
     wave_operations: bool,
-    /// An upscaler's SPD pass runs as two dispatches (`upscaler_spd`): on
-    /// the core resource set, whose mips cannot be bound read-write. Only
-    /// `storage_tests` sets it on the SDK's set, as the reference for what
-    /// the second dispatch stores.
-    split_spd: bool,
+    /// An upscaler's SPD pass runs as the SDK's one dispatch instead of two
+    /// (`upscaler_spd`). Only `storage_tests` sets it, to show the hand-off
+    /// one dispatch races on (sp-fidelity#5, SDK-P14).
+    single_spd: bool,
 }
 
 impl Capabilities {
     fn of(features: wgpu::Features) -> Self {
-        let sdk_storage = features.contains(sdk_storage_features());
+        let set = resource_set(features);
         Self {
-            sdk_storage,
-            // The core set is a browser's, whose compiler takes no subgroup
-            // built-in without its extension: it never uses them.
-            wave_operations: sdk_storage && features.contains(wgpu::Features::SUBGROUP),
-            split_spd: !sdk_storage,
+            set,
+            wave_operations: set == FfxWgpuResourceSet::Sdk
+                && features.contains(wgpu::Features::SUBGROUP),
+            single_spd: false,
         }
     }
 
@@ -175,8 +211,11 @@ impl Capabilities {
         if !matches!(effect, FfxEffect::Fsr2 | FfxEffect::Fsr3Upscaler) {
             return FfxWgslUpscalerOptions::default();
         }
+        let sdk = self.set == FfxWgpuResourceSet::Sdk;
         FfxWgslUpscalerOptions {
-            core: !self.sdk_storage,
+            core_formats: self.set == FfxWgpuResourceSet::Core,
+            buffer_atomics: !sdk,
+            strict: !sdk,
             no_wave_operations: !self.wave_operations,
             spd_phase: None,
         }
@@ -644,9 +683,8 @@ impl FfxWgpuBackend {
 
     /// A texture for a resource the SDK describes and the caller owns
     /// (FSR3's `ffxFsr3UpscalerGetSharedResourceDescriptions`), allocated as
-    /// this backend allocates `effect`'s own: in the SDK's format where the
-    /// device has it and in the core resource set's otherwise, with the
-    /// usages its passes need. Register it each frame with
+    /// this backend allocates `effect`'s own: in the format of the device's
+    /// resource set ([`resource_set`]), with the usages its passes need. Register it each frame with
     /// [`Self::ffx_get_described_resource_wgpu`]. The description's initial
     /// data is not uploaded.
     pub fn ffx_create_texture_wgpu(
@@ -1054,16 +1092,18 @@ impl FfxWgpuBackend {
                     let fi_spd = pipeline.effect == FfxEffect::FrameInterpolation
                         && (pipeline.pass == Pass::InpaintingPyramid as u32
                             || pipeline.pass == Pass::GameVectorFieldInpaintingPyramid as u32);
-                    // The core resource set binds its mips write-only, and
-                    // WebGPU rejects two writable views of one mip in a
+                    // The reduced resource sets bind their mips write-only,
+                    // and WebGPU rejects two writable views of one mip in a
                     // group, which the last mip standing in for an absent
                     // one would be: an absent mip gets its own inert view
                     // there too, and stores to it are discarded (SDK-P38).
-                    Some(if fi_spd || !self.capabilities.sdk_storage {
-                        uav.mip
-                    } else {
-                        object.uav_mip(uav.mip)
-                    })
+                    Some(
+                        if fi_spd || self.capabilities.set != FfxWgpuResourceSet::Sdk {
+                            uav.mip
+                        } else {
+                            object.uav_mip(uav.mip)
+                        },
+                    )
                 }
                 _ => return Err(FFX_ERROR_INVALID_ARGUMENT),
             };
@@ -1538,15 +1578,13 @@ impl FfxWgpuBackend {
         {
             allocation.resource_description.r#type = FfxResourceType::Texture2D;
         }
-        // The core resource set of an upscaler on a device without the SDK's
-        // storage formats.
+        // An upscaler's resource on a set other than the SDK's.
         let core = effect
             .filter(|effect| {
-                !self.capabilities.sdk_storage
-                    && matches!(effect, FfxEffect::Fsr2 | FfxEffect::Fsr3Upscaler)
+                matches!(effect, FfxEffect::Fsr2 | FfxEffect::Fsr3Upscaler)
                     && description.r#type != FfxResourceType::Buffer
             })
-            .and_then(|effect| storage::allocation(effect, d));
+            .and_then(|effect| storage::allocation(self.capabilities.set, effect, d));
         if let Some(core) = core {
             allocation.resource_description.width *= core.columns;
         }
@@ -1588,7 +1626,7 @@ impl FfxWgpuBackend {
             ffx_get_upscaler_wgsl_source(blob, options)
         }
         .ok_or(FFX_ERROR_BACKEND_API_ERROR)?;
-        Ok(if options.core {
+        Ok(if options.core_formats {
             storage::declare(source)
         } else if effect == FfxEffect::Fsr3Upscaler {
             // Metal cannot read and write `Rg16Float` in one pass; the SPD
@@ -2446,9 +2484,18 @@ impl FfxInterface for FfxWgpuBackend {
             // SDK-P6: not selected, because the backend reports SM6.2.
             return Err(FFX_ERROR_BACKEND_API_ERROR);
         }
-        // An upscaler's SPD pass on the core resource set runs as two
-        // dispatches, each its own module (`spd_tail_pipeline`).
-        let split_upscaler_spd = upscaler_spd(effect, pass).filter(|_| self.capabilities.split_spd);
+        // SPD runs as two dispatches, each its own module
+        // (`spd_tail_pipeline`), where its tail stores something, since in
+        // one dispatch the tail reads mip 5 while other workgroups write it
+        // (sp-fidelity#5, SDK-P14); and on the reduced sets, whose WGSL a
+        // browser compiles and rejects in one dispatch, where SPD's barriers
+        // follow its exit on the atomic counter outside uniform control flow.
+        // FSR3's shading-change pyramid stores nothing above mip 5, so on the
+        // SDK's set it keeps AMD's one dispatch.
+        let split_upscaler_spd = upscaler_spd(effect, pass).filter(|&tail_stores| {
+            !self.capabilities.single_spd
+                && (tail_stores || self.capabilities.set != FfxWgpuResourceSet::Sdk)
+        });
         let source = self.wgsl_source(
             effect,
             &blob,

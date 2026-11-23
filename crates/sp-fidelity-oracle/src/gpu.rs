@@ -41,9 +41,21 @@ impl Gpu {
     }
 
     /// A device with only the features of the backend's core resource set,
-    /// as a browser's has, and `SHADER_F16` when `fp16`.
+    /// as a browser's without `texture-formats-tier2` has, and `SHADER_F16`
+    /// when `fp16`.
     pub fn core(fp16: bool) -> Self {
-        let features = sp_fidelity_wgpu::core_required_features()
+        Self::fp16(sp_fidelity_wgpu::core_required_features(), fp16)
+    }
+
+    /// A device with only the features of the backend's SDK-formats resource
+    /// set, as a browser's with `texture-formats-tier2` has, and
+    /// `SHADER_F16` when `fp16`.
+    pub fn sdk_formats(fp16: bool) -> Self {
+        Self::fp16(sp_fidelity_wgpu::sdk_formats_required_features(), fp16)
+    }
+
+    fn fp16(features: wgpu::Features, fp16: bool) -> Self {
+        let features = features
             | if fp16 {
                 wgpu::Features::SHADER_F16
             } else {
@@ -52,12 +64,9 @@ impl Gpu {
         Self::with_features(features, None)
     }
 
-    /// Whether the backend runs its core resource set on this device.
-    pub fn is_core(&self) -> bool {
-        !self
-            .device
-            .features()
-            .contains(sp_fidelity_wgpu::required_features() - wgpu::Features::SUBGROUP)
+    /// The resource set the backend runs on this device.
+    pub fn resource_set(&self) -> sp_fidelity_wgpu::FfxWgpuResourceSet {
+        sp_fidelity_wgpu::resource_set(self.device.features())
     }
 
     /// Request exactly the feature set available to the caller under test.

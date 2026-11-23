@@ -30,7 +30,7 @@
 #include "fsr3upscaler/ffx_fsr3upscaler_resources.wgsl"
 #if defined(FFX_GPU)
 #include "ffx_core.wgsl"
-#if defined(FFX_WGSL_CORE)
+#if defined(FFX_WGSL_CORE_FORMATS)
 #include "ffx_core_storage.wgsl"
 #endif
 #if defined(FSR3UPSCALER_BIND_CB_FSR3UPSCALER)
@@ -690,7 +690,7 @@ fn LoadNewLocks(iPxPos: FfxUInt32x2) -> FfxFloat32
 #endif
 
 #if defined(FSR3UPSCALER_BIND_UAV_NEW_LOCKS)
-#if defined(FFX_WGSL_CORE)
+#if defined(FFX_WGSL_CORE_FORMATS)
 // WebGPU's core read-write formats are 32-bit: r32float holds the value the
 // R8_UNORM texel would return (StoreNewLocks).
 @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_NEW_LOCKS) var rw_new_locks: texture_storage_2d<r32float, read_write>;
@@ -709,7 +709,7 @@ fn LoadRwNewLocks(iPxPos: FfxUInt32x2) -> FfxFloat32
 fn StoreNewLocks(iPxPos: FfxUInt32x2, newLock: FfxFloat32)
 {
     if (!ffxWgslOutside(FfxInt32x2(iPxPos), textureDimensions(rw_new_locks))) {
-#if defined(FFX_WGSL_CORE)
+#if defined(FFX_WGSL_CORE_FORMATS)
         textureStore(rw_new_locks, iPxPos, FfxFloat32x4(ffxWgslUnorm8(newLock)));
 #else
         textureStore(rw_new_locks, iPxPos, FfxFloat32x4(newLock));
@@ -731,7 +731,7 @@ fn LoadReconstructedPrevDepth(iPxPos: FfxUInt32x2) -> FfxFloat32
 #endif
 
 #if defined(FSR3UPSCALER_BIND_UAV_RECONSTRUCTED_PREV_NEAREST_DEPTH)
-#if defined(FFX_WGSL_CORE)
+#if defined(FFX_WGSL_BUFFER_ATOMICS)
 // WGSL without texture atomics: the texture's words as a storage buffer, one
 // a texel in rows of the maximum render width, the width of the texture
 // ffxFsr3UpscalerGetSharedResourceDescriptions describes. The backend
@@ -987,7 +987,7 @@ fn StorePrevPostAlpha(iPxPos: FFX_MIN16_I2, color: FFX_MIN16_F3)
 #endif
 
 #if defined(FSR3UPSCALER_BIND_UAV_FRAME_INFO)
-#if defined(FFX_WGSL_CORE)
+#if defined(FFX_WGSL_CORE_FORMATS)
 // WebGPU's core read-write formats have one component: the backend allocates
 // the 1x1 texture as r32float 4x1, a texel a component.
 @group(0) @binding(FFX_WGSL_BINDING_OFFSET_UAV + FSR3UPSCALER_BIND_UAV_FRAME_INFO) var rw_frame_info: texture_storage_2d<r32float, read_write>;
@@ -1025,7 +1025,7 @@ fn StoreFrameInfo(fInfo: FfxFloat32x4)
 
 fn FrameInfo() -> FfxFloat32x4
 {
-#if defined(FFX_WGSL_CORE)
+#if defined(FFX_WGSL_CORE_FORMATS)
     return FfxFloat32x4(textureLoad(r_frame_info, FfxInt32x2(0, 0), 0).x, textureLoad(r_frame_info, FfxInt32x2(1, 0), 0).x,
                         textureLoad(r_frame_info, FfxInt32x2(2, 0), 0).x, textureLoad(r_frame_info, FfxInt32x2(3, 0), 0).x);
 #else

@@ -1,12 +1,17 @@
-//! The core resource set: how FSR2's and FSR3's textures are allocated on a
-//! device without the SDK's storage formats (`sdk_storage_features`), which is
-//! every browser's. WebGPU's core set writes storage textures in the RGBA and
-//! 32-bit formats only, reads and writes them in one pass in the 32-bit
-//! single-component formats only, and has no 16-bit normalized format.
+//! The resource sets other than the SDK's (`FfxWgpuResourceSet`): how FSR2's
+//! and FSR3's textures are allocated on a device without the SDK's storage
+//! formats or texture atomics, as every browser's is.
 //!
-//! One table owns every substitution: the allocation, the WGSL declaration and
-//! the texel conversion between the SDK's layout and the allocation's. Each
-//! keeps the SDK's values (CONFORMANCE.md, SDK-P38):
+//! On the SDK-formats set (`TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES`, a
+//! browser's `texture-formats-tier2`) only the `R16_SNORM` lookups change:
+//! WebGPU has no filterable 16-bit normalized format, whatever its tier.
+//!
+//! On the core set, WebGPU's core set writes storage textures in the RGBA and
+//! 32-bit formats only and reads and writes them in one pass in the 32-bit
+//! single-component formats only. One table owns every substitution: the
+//! allocation, the WGSL declaration and the texel conversion between the
+//! SDK's layout and the allocation's. Each keeps the SDK's values
+//! (CONFORMANCE.md, SDK-P38):
 //!
 //! - A narrow format a pass only writes becomes the RGBA format of the same
 //!   component type, so the hardware converts each store as it would the
@@ -17,11 +22,13 @@
 //!   the port's WGSL storing the value the unorm texel would return.
 //! - A read-write 1x1 `R32G32_FLOAT` or `R32G32B32A32_FLOAT` texture becomes
 //!   `R32Float` with a texel a component (`columns`).
-//! - An `R16_SNORM` lookup becomes `R32Float` holding each snorm value. No
-//!   pass the core set builds reads one (`get_device_capabilities`).
+//! - An `R16_SNORM` lookup becomes `R32Float` holding each snorm value, on
+//!   both sets. No pass either builds reads one: they report no wave lanes,
+//!   so the SDK selects no lookup permutation (`get_device_capabilities`).
 //!
 //! The mips SPD reads and writes stay 16-bit floats: its two dispatches bind
-//! them write-only and read-only instead (`FfxWgslSpdPhase`).
+//! them write-only and read-only (`FfxWgslSpdPhase`), on every set.
+use crate::FfxWgpuResourceSet;
 use sp_fidelity::types::{
     FFX_RESOURCE_USAGE_UAV, FfxCreateResourceDescription, FfxEffect, FfxSurfaceFormat,
 };
@@ -71,9 +78,10 @@ pub(crate) struct Allocation {
     pub columns: u32,
 }
 
-/// The core set's allocation of a texture `effect` creates, where it differs
+/// The allocation of a texture `effect` creates on `set`, where it differs
 /// from the SDK's format.
 pub(crate) fn allocation(
+    set: FfxWgpuResourceSet,
     effect: FfxEffect,
     create: &FfxCreateResourceDescription,
 ) -> Option<Allocation> {
@@ -89,18 +97,20 @@ pub(crate) fn allocation(
         }
         _ => false,
     };
-    match description.format {
-        FfxSurfaceFormat::R16Snorm => one(TextureFormat::R32Float),
-        FfxSurfaceFormat::R8Unorm if uav && new_locks => one(TextureFormat::R32Float),
-        FfxSurfaceFormat::R32G32Float if uav => Some(Allocation {
+    match (set, description.format) {
+        (FfxWgpuResourceSet::Sdk, _) => None,
+        (_, FfxSurfaceFormat::R16Snorm) => one(TextureFormat::R32Float),
+        (FfxWgpuResourceSet::SdkFormats, _) => None,
+        (_, FfxSurfaceFormat::R8Unorm) if uav && new_locks => one(TextureFormat::R32Float),
+        (_, FfxSurfaceFormat::R32G32Float) if uav => Some(Allocation {
             format: TextureFormat::R32Float,
             columns: 2,
         }),
-        FfxSurfaceFormat::R32G32B32A32Float if uav => Some(Allocation {
+        (_, FfxSurfaceFormat::R32G32B32A32Float) if uav => Some(Allocation {
             format: TextureFormat::R32Float,
             columns: 4,
         }),
-        format if uav => storage_format(format).and_then(one),
+        (_, format) if uav => storage_format(format).and_then(one),
         _ => None,
     }
 }

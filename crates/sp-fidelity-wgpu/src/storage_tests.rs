@@ -1,4 +1,4 @@
-//! The core resource set against the SDK's, on one adapter: the same frames
+//! The reduced resource sets against the SDK's, on one adapter: the same frames
 //! through devices requested with different features, and every job's writes
 //! compared in the SDK's texel layout (SDK-P38).
 use super::*;
@@ -372,7 +372,7 @@ fn dimensions(size: [u32; 2]) -> FfxDimensions2D {
 fn fsr2(device: &wgpu::Device, queue: &wgpu::Queue, case: Case, spd: Spd) -> (Writes, u64) {
     let (backend, interface) = ffx_get_interface_wgpu(device);
     backend.borrow_mut().set_fp16_supported(case.fp16);
-    backend.borrow_mut().capabilities.split_spd |= spd == Spd::Split;
+    backend.borrow_mut().capabilities.single_spd = spd == Spd::Single;
     let recorder = Recorder::install(&mut backend.borrow_mut());
     let mut context = FfxFsr2Context::default();
     let mut flags = FFX_FSR2_ENABLE_HIGH_DYNAMIC_RANGE
@@ -467,7 +467,7 @@ fn fsr2(device: &wgpu::Device, queue: &wgpu::Queue, case: Case, spd: Spd) -> (Wr
 fn fsr3(device: &wgpu::Device, queue: &wgpu::Queue, case: Case, spd: Spd) -> (Writes, u64) {
     let (backend, interface) = ffx_get_interface_wgpu(device);
     backend.borrow_mut().set_fp16_supported(case.fp16);
-    backend.borrow_mut().capabilities.split_spd |= spd == Spd::Split;
+    backend.borrow_mut().capabilities.single_spd = spd == Spd::Single;
     let recorder = Recorder::install(&mut backend.borrow_mut());
     let mut context = FfxFsr3UpscalerContext::default();
     let mut flags = FFX_FSR3UPSCALER_ENABLE_HIGH_DYNAMIC_RANGE
@@ -625,13 +625,12 @@ fn differences(expected: &Writes, actual: &Writes, keep: impl Fn(&str) -> bool) 
 /// How a run's backend is set up beyond its device's features.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Spd {
-    /// As the device's features select.
+    /// As the backend dispatches it: two dispatches on every set.
     Selected,
-    /// Two dispatches on a device with the SDK's storage formats, where the
-    /// backend otherwise keeps the SDK's one. The reference for what SPD's
-    /// reduction above mip 5 writes: in one dispatch it reads mip 5 while
-    /// other workgroups write it, which is a race on Metal (SDK-P14).
-    Split,
+    /// The SDK's one dispatch, which the backend no longer records: in it the
+    /// reduction above mip 5 reads mip 5 while other workgroups write it, a
+    /// race on Metal (sp-fidelity#5, SDK-P14).
+    Single,
 }
 
 type Run = fn(&wgpu::Device, &wgpu::Queue, Case, Spd) -> (Writes, u64);
@@ -659,60 +658,93 @@ fn assert_same(name: &str, case: Case, expected: &Writes, actual: &Writes, keep:
     );
 }
 
-/// Defects: a core-set allocation, declaration or store that does not hold
-/// what the SDK's format would (a widened store the hardware converts
+/// Defects: a reduced set's allocation, declaration or store that does not
+/// hold what the SDK's format would (a widened store the hardware converts
 /// differently, a lock that is not the unorm value, a component in the wrong
 /// texel); atomics on the buffer that lose a minimum or address another
-/// texel. Any of them changes a texel some job writes. The reference is the
-/// SDK's formats, read-write accesses and texture atomics on a device without
-/// subgroups, with SPD split as the core set splits it, so that the two
-/// differ in the storage alone and run the same permutations on the same
-/// schedule (`split_spd_writes_what_one_dispatch_writes` and
-/// `spd_without_wave_operations_writes_what_its_wave_operations_write` tie
-/// that reference to the SDK's own dispatch). A second core-set run would
+/// texel; a device that does not select the set its features name. Any of
+/// them changes a texel some job writes. The reference is the SDK's set on a
+/// device without subgroups, so that the two differ in the storage alone and
+/// run the same permutations on the same schedule
+/// (`spd_without_wave_operations_writes_what_its_wave_operations_write` ties
+/// it to the SDK's set with subgroups). A second run of the reduced set would
 /// differ from the first if a hand-off between its passes or dispatches
 /// raced.
-fn core_set_writes_what_the_sdk_set_writes((run, effect, name): Effect) {
+fn reduced_set_writes_what_the_sdk_set_writes(
+    (run, effect, name): Effect,
+    reduced: wgpu::Features,
+    set: FfxWgpuResourceSet,
+) {
     let sdk = (required_features() - wgpu::Features::SUBGROUP) | optional_features();
-    let core = core_required_features() | optional_features();
-    let (Some(sdk), Some(core)) = (device_with(sdk, effect), device_with(core, effect)) else {
+    let (Some(sdk), Some(reduced)) = (
+        device_with(sdk, effect),
+        device_with(reduced | optional_features(), effect),
+    ) else {
         return;
     };
+    assert_eq!(resource_set(sdk.0.features()), FfxWgpuResourceSet::Sdk);
+    assert_eq!(resource_set(reduced.0.features()), set);
     for case in CASES {
-        let (expected, sdk_memory) = run(&sdk.0, &sdk.1, case, Spd::Split);
-        let (actual, core_memory) = run(&core.0, &core.1, case, Spd::Selected);
+        let (expected, sdk_memory) = run(&sdk.0, &sdk.1, case, Spd::Selected);
+        let (actual, memory) = run(&reduced.0, &reduced.1, case, Spd::Selected);
         assert_same(name, case, &expected, &actual, |_| true);
-        let (again, _) = run(&core.0, &core.1, case, Spd::Selected);
+        let (again, _) = run(&reduced.0, &reduced.1, case, Spd::Selected);
         assert_same(name, case, &actual, &again, |_| true);
         eprintln!(
             "{name} {case:?}: {} writes identical; GPU memory {sdk_memory} bytes (SDK set), \
-             {core_memory} (core set)",
+             {memory} ({set:?} set)",
             expected.len()
         );
     }
 }
 
 #[test]
+fn fsr2_sdk_formats_resource_set_writes_what_the_sdk_resource_set_writes() {
+    reduced_set_writes_what_the_sdk_set_writes(
+        FSR2,
+        sdk_formats_required_features(),
+        FfxWgpuResourceSet::SdkFormats,
+    );
+}
+
+#[test]
+fn fsr3_sdk_formats_resource_set_writes_what_the_sdk_resource_set_writes() {
+    reduced_set_writes_what_the_sdk_set_writes(
+        FSR3,
+        sdk_formats_required_features(),
+        FfxWgpuResourceSet::SdkFormats,
+    );
+}
+
+#[test]
 fn fsr2_core_resource_set_writes_what_the_sdk_resource_set_writes() {
-    core_set_writes_what_the_sdk_set_writes(FSR2);
+    reduced_set_writes_what_the_sdk_set_writes(
+        FSR2,
+        core_required_features(),
+        FfxWgpuResourceSet::Core,
+    );
 }
 
 #[test]
 fn fsr3_core_resource_set_writes_what_the_sdk_resource_set_writes() {
-    core_set_writes_what_the_sdk_set_writes(FSR3);
+    reduced_set_writes_what_the_sdk_set_writes(
+        FSR3,
+        core_required_features(),
+        FfxWgpuResourceSet::Core,
+    );
 }
 
-/// Defect: SPD's two dispatches reducing differently from its one: tiles
+/// Defect: SPD's two dispatches reducing differently from AMD's one: tiles
 /// that store other texels, a second dispatch that changes what the first
-/// stored, never runs, or reduces mip 5 wrongly. One device, without
-/// subgroups, runs both. With the application's exposure nothing reads what
-/// SPD stores at the 1x1 mip, so every other write of every pass is compared
-/// in every case; that store is the hand-off the one-dispatch form races on
-/// where several workgroups write mip 5 (`handed_off`). With one workgroup
-/// nothing races, so there every write is compared, that store and what
-/// reads it (auto exposure) included.
+/// stored, never runs, or reduces mip 5 wrongly. One device, with every
+/// feature of `required_features`, runs both. With the application's exposure
+/// nothing reads what SPD stores at the 1x1 mip, so every other write of
+/// every pass is compared in every case; that store is the hand-off the one
+/// dispatch races on where several workgroups write mip 5 (`handed_off`).
+/// With one workgroup nothing races, so there every write is compared, that
+/// store and what reads it (auto exposure) included.
 fn split_spd_writes_what_one_dispatch_writes((run, effect, name): Effect) {
-    let features = (required_features() - wgpu::Features::SUBGROUP) | optional_features();
+    let features = required_features() | optional_features();
     let Some((device, queue)) = device_with(features, effect) else {
         return;
     };
@@ -721,14 +753,14 @@ fn split_spd_writes_what_one_dispatch_writes((run, effect, name): Effect) {
             auto_exposure: false,
             ..case
         };
-        let (expected, _) = run(&device, &queue, case, Spd::Selected);
-        let (actual, _) = run(&device, &queue, case, Spd::Split);
+        let (expected, _) = run(&device, &queue, case, Spd::Single);
+        let (actual, _) = run(&device, &queue, case, Spd::Selected);
         assert_same(name, case, &expected, &actual, |binding| {
             !handed_off(binding)
         });
     }
-    let (expected, _) = run(&device, &queue, ONE_WORKGROUP, Spd::Selected);
-    let (actual, _) = run(&device, &queue, ONE_WORKGROUP, Spd::Split);
+    let (expected, _) = run(&device, &queue, ONE_WORKGROUP, Spd::Single);
+    let (actual, _) = run(&device, &queue, ONE_WORKGROUP, Spd::Selected);
     assert!(expected.keys().any(|key| handed_off(&key.2)));
     assert_same(name, ONE_WORKGROUP, &expected, &actual, |_| true);
 }
@@ -748,8 +780,7 @@ fn fsr3_split_spd_writes_what_one_dispatch_writes() {
 /// intrinsics. The pyramids read only what the passes before them wrote from
 /// the application's inputs, which no permutation the wave lanes select
 /// changes, so their writes are compared between a device with subgroups and
-/// one without, both in the SDK's one dispatch and so apart from its
-/// hand-off (`handed_off`).
+/// one without, every mip SPD stores and the 1x1 store included.
 fn spd_without_wave_operations_writes_what_its_wave_operations_write((run, effect, name): Effect) {
     let wave = required_features() | optional_features();
     let (Some(wave), Some(none)) = (
@@ -762,12 +793,9 @@ fn spd_without_wave_operations_writes_what_its_wave_operations_write((run, effec
         binding.starts_with("rw_img_mip")
             || binding.starts_with("rw_spd_mip")
             || binding == "rw_farthest_depth_mip1"
+            || handed_off(binding)
     };
     for case in CASES {
-        let case = Case {
-            auto_exposure: false,
-            ..case
-        };
         let (expected, _) = run(&wave.0, &wave.1, case, Spd::Selected);
         let (actual, _) = run(&none.0, &none.1, case, Spd::Selected);
         assert_same(name, case, &expected, &actual, spd);
@@ -784,19 +812,20 @@ fn fsr3_spd_without_wave_operations_writes_what_its_wave_operations_write() {
     spd_without_wave_operations_writes_what_its_wave_operations_write(FSR3);
 }
 
-/// Defect: the core set failing where a pyramid's texture lacks a mip a pass
-/// binds (SDK-P27): below a 64-pixel maximum render size FSR2's exposure mips
-/// and FSR3's SPD mips have no mip 5. The SDK's set binds the last mip in its
-/// place; the core set, whose bindings are write-only views WebGPU does not
-/// let alias, binds an inert one. wgpu rejecting either, or a job failing,
-/// panics in the run; a second run differing from the first would show a
-/// store that reached a shared texel.
+/// Defect: a reduced set failing where a pyramid's texture lacks a mip a
+/// pass binds (SDK-P27): below a 64-pixel maximum render size FSR2's exposure
+/// mips and FSR3's SPD mips have no mip 5. The SDK's set binds the last mip
+/// in its place; the reduced sets, whose bindings are write-only views
+/// WebGPU does not let alias, bind an inert one. wgpu rejecting either, or a
+/// job failing, panics in the run; a second run differing from the first
+/// would show a store that reached a shared texel.
 #[test]
-fn core_resource_set_runs_below_a_64_pixel_maximum_render_size() {
-    for (run, effect, name) in [FSR2, FSR3] {
-        let Some((device, queue)) =
-            device_with(core_required_features() | optional_features(), effect)
-        else {
+fn reduced_resource_sets_run_below_a_64_pixel_maximum_render_size() {
+    for ((run, effect, name), features) in [FSR2, FSR3].into_iter().flat_map(|effect| {
+        [sdk_formats_required_features(), core_required_features()]
+            .map(|features| (effect, features))
+    }) {
+        let Some((device, queue)) = device_with(features | optional_features(), effect) else {
             return;
         };
         for size in [[48, 40], [24, 20]] {
@@ -854,7 +883,7 @@ fn core_storage_locks_hold_what_an_r8_unorm_texel_returns() {
         ffx_get_upscaler_wgsl_source(
             &blob,
             FfxWgslUpscalerOptions {
-                core: true,
+                core_formats: true,
                 ..Default::default()
             },
         )
@@ -996,4 +1025,40 @@ fn core_storage_locks_hold_what_an_r8_unorm_texel_returns() {
             f32::from_bits(typed)
         );
     }
+}
+
+/// Defect (sp-fidelity#5): what SPD stores at the 1x1 mip (FSR2's auto
+/// exposure, FSR3's frame info) depending on how its workgroups were
+/// scheduled. On a device with every feature of `required_features` the same
+/// frames must store the same values in every run. 240 workgroups reduce a
+/// 1280x720 frame, so a hand-off that can read mip 5 before another workgroup
+/// writes it has many chances to.
+fn spd_stores_the_same_exposure_in_every_run((run, effect, name): Effect) {
+    let Some((device, queue)) = device_with(required_features() | optional_features(), effect)
+    else {
+        return;
+    };
+    let case = Case {
+        display: [1280, 720],
+        render: [1280, 720],
+        fp16: true,
+        auto_exposure: true,
+        extras: false,
+    };
+    let (first, _) = run(&device, &queue, case, Spd::Selected);
+    assert_eq!(resource_set(device.features()), FfxWgpuResourceSet::Sdk);
+    for _ in 0..3 {
+        let (again, _) = run(&device, &queue, case, Spd::Selected);
+        assert_same(name, case, &first, &again, handed_off);
+    }
+}
+
+#[test]
+fn fsr2_spd_stores_the_same_exposure_in_every_run() {
+    spd_stores_the_same_exposure_in_every_run(FSR2);
+}
+
+#[test]
+fn fsr3_spd_stores_the_same_exposure_in_every_run() {
+    spd_stores_the_same_exposure_in_every_run(FSR3);
 }

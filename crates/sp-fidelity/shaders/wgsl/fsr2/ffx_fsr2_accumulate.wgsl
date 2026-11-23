@@ -246,7 +246,7 @@ fn InitParams(iPxHrPos: FfxInt32x2) -> AccumulationPassCommonParams
     params.fMotionVector = GetMotionVector(iPxHrPos, fHrUv);
     params.fHrVelocity = GetPxHrVelocity_f32x2(params.fMotionVector);
 
-#if defined(FFX_WGSL_CORE)
+#if defined(FFX_WGSL_STRICT)
     // WGSL's specification rejects two written pointers into one variable:
     // the outputs go through locals, which the function writes before any
     // read.

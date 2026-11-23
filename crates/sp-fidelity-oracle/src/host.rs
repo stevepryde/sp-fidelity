@@ -226,3 +226,56 @@ pub fn run_cpp_host(
     );
     String::from_utf8(output.stdout).unwrap()
 }
+
+/// The words of `OpticalFlowSpdConstants` the SDK leaves uninitialized:
+/// `pad0_`, `pad1_` and `pad2_` after `mips`, `numworkGroups`,
+/// `workGroupOffset[2]` and `numworkGroupsOpticalFlowInputPyramid`
+/// (`ffx_opticalflow.cpp:92-103`). The C++ host stages a stack copy whose
+/// padding holds whatever the stack held, which varies with the build; no
+/// shader reads it.
+const OPTICALFLOW_SPD_PADDING: std::ops::Range<usize> = 5..8;
+
+/// Sets the uninitialized padding words of every `OpticalFlowSpdConstants`
+/// in a host event stream to zero, the port's value, so a comparison covers
+/// every word the SDK initializes and only those.
+///
+/// A compute event names each constant buffer it binds (`cbOF_SPD`). A
+/// `constants` event does not: optical flow's dispatch stages `cbOF` and then
+/// `OpticalFlowSpdConstants` (`ffx_opticalflow.cpp:644-645`), and DXC drops
+/// the SPD buffer from passes that do not read it, so the SPD buffer is the
+/// `constants` event that follows the one whose words a later compute binds
+/// as `cbOF`.
+pub fn clear_constant_padding(events: &mut [Value]) {
+    let clear = |words: &mut Value| {
+        for word in &mut words.as_array_mut().expect("constant words")[OPTICALFLOW_SPD_PADDING] {
+            *word = Value::from(0);
+        }
+    };
+    for index in 0..events.len() {
+        if events[index][0] == "compute" {
+            for cb in events[index][6].as_array_mut().expect("compute constants") {
+                if cb[0] == "cbOF_SPD" {
+                    clear(&mut cb[1]);
+                }
+            }
+            continue;
+        }
+        if events[index][0] != "constants"
+            || events
+                .get(index + 1)
+                .is_none_or(|next| next[0] != "constants")
+        {
+            continue;
+        }
+        let staged = &events[index][1];
+        let of_constants = events[index + 1..]
+            .iter()
+            .filter(|event| event[0] == "compute")
+            .flat_map(|event| event[6].as_array().into_iter().flatten())
+            .find(|cb| cb[0] == "cbOF")
+            .is_some_and(|cb| cb[1] == *staged);
+        if of_constants {
+            clear(&mut events[index + 1][1]);
+        }
+    }
+}
