@@ -855,25 +855,21 @@ fn SpdDownsampleH_u32x2_u32_u32_u32_u32(workGroupID: FfxUInt32x2, localInvocatio
     let x: FfxUInt32      = sub_xy.x + 8u * ((localInvocationIndex >> 6u) % 2u);
     let y: FfxUInt32      = sub_xy.y + 8u * ((localInvocationIndex >> 7u));
 
-    if (spdPhase != 2u) {
-        // compute MIP level 0 and 1
-        SpdDownsampleMips_0_1H(x, y, workGroupID, localInvocationIndex, mips, slice);
+    // compute MIP level 0 and 1
+    SpdDownsampleMips_0_1H(x, y, workGroupID, localInvocationIndex, mips, slice);
 
-        // compute MIP level 2, 3, 4, 5
-        SpdDownsampleNextFourH(x, y, workGroupID, localInvocationIndex, 2u, mips, slice);
-    }
+    // compute MIP level 2, 3, 4, 5
+    SpdDownsampleNextFourH(x, y, workGroupID, localInvocationIndex, 2u, mips, slice);
 
-    if (mips < 7u || spdPhase == 1u) {
+    if (mips < 7u) {
         return;
     }
 
     // increase the global atomic counter for the given slice and check if it's the last remaining thread group:
     // terminate if not, continue if yes.
-#if !defined(FFX_WGSL_SPD_PHASE)
-    if (spdPhase == 0u && SpdExitWorkgroup(numWorkGroups, localInvocationIndex, slice)) {
+    if (SpdExitWorkgroup(numWorkGroups, localInvocationIndex, slice)) {
         return;
     }
-#endif
 
     // reset the global atomic counter back to 0 for the next spd dispatch
     SpdResetAtomicCounter(slice);

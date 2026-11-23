@@ -19,7 +19,8 @@ fn device_with(features: wgpu::Features, effect: FfxEffect) -> Option<(wgpu::Dev
             pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
                 required_features: features,
                 required_limits: wgpu::Limits {
-                    max_storage_textures_per_shader_stage: storage_textures_per_stage(effect),
+                    max_storage_textures_per_shader_stage:
+                        storage_textures_per_stage(effect).unwrap(),
                     ..adapter.limits()
                 },
                 ..Default::default()
@@ -120,7 +121,32 @@ impl Recorder {
             .zip(readback::Readback::read_all(device, readbacks))
         {
             let bytes = match formats {
-                Some((sdk, allocation)) => ffx_sdk_texels_wgpu(sdk, allocation, &bytes),
+                Some((sdk, allocation)) => {
+                    let narrowed = ffx_sdk_texels_wgpu(sdk, allocation, &bytes);
+                    // Two conversions round on the way to the SDK's layout.
+                    // The texel must already be exactly what the SDK's format
+                    // holds, or the rounding would hide a store that did not
+                    // convert: widened again, it is the texel that was read.
+                    match (sdk, allocation) {
+                        (FfxSurfaceFormat::R8Unorm, wgpu::TextureFormat::R32Float) => assert_eq!(
+                            ffx_texels_from_sdk_wgpu(sdk, allocation, &narrowed),
+                            bytes,
+                            "{key:?}: a lock that is not a unorm value"
+                        ),
+                        (FfxSurfaceFormat::R11G11B10Float, wgpu::TextureFormat::Rgba16Float) => {
+                            let widened = ffx_texels_from_sdk_wgpu(sdk, allocation, &narrowed);
+                            assert!(
+                                widened
+                                    .chunks_exact(8)
+                                    .zip(bytes.chunks_exact(8))
+                                    .all(|(a, b)| a[..6] == b[..6]),
+                                "{key:?}: a colour that is not an 11/11/10-bit value"
+                            );
+                        }
+                        _ => {}
+                    }
+                    narrowed
+                }
                 None => bytes,
             };
             assert!(into.insert(key.clone(), bytes).is_none(), "{key:?} twice");
@@ -272,7 +298,15 @@ struct Case {
     extras: bool,
 }
 
-const CASES: [Case; 4] = [
+const ONE_WORKGROUP: Case = Case {
+    display: [64, 64],
+    render: [64, 64],
+    fp16: true,
+    auto_exposure: true,
+    extras: false,
+};
+
+const CASES: [Case; 5] = [
     // SPD reduces above mip 5: both of its dispatches run.
     Case {
         display: [200, 120],
@@ -296,6 +330,9 @@ const CASES: [Case; 4] = [
         auto_exposure: true,
         extras: false,
     },
+    // One SPD workgroup and seven mips: its second dispatch runs, and in one
+    // dispatch no other workgroup writes what it reads (`ONE_WORKGROUP`).
+    ONE_WORKGROUP,
     // Six mips: SPD stops at mip 5 and stores the exposure there.
     Case {
         display: [80, 60],
@@ -626,10 +663,15 @@ fn assert_same(name: &str, case: Case, expected: &Writes, actual: &Writes, keep:
 /// what the SDK's format would (a widened store the hardware converts
 /// differently, a lock that is not the unorm value, a component in the wrong
 /// texel); atomics on the buffer that lose a minimum or address another
-/// texel. Any of them changes a texel some job writes. The devices differ
-/// only in the storage features and both split SPD, so they run the same
-/// permutations on the same schedule; a second core-set run would differ from
-/// the first if a hand-off between its passes or dispatches raced.
+/// texel. Any of them changes a texel some job writes. The reference is the
+/// SDK's formats, read-write accesses and texture atomics on a device without
+/// subgroups, with SPD split as the core set splits it, so that the two
+/// differ in the storage alone and run the same permutations on the same
+/// schedule (`split_spd_writes_what_one_dispatch_writes` and
+/// `spd_without_wave_operations_writes_what_its_wave_operations_write` tie
+/// that reference to the SDK's own dispatch). A second core-set run would
+/// differ from the first if a hand-off between its passes or dispatches
+/// raced.
 fn core_set_writes_what_the_sdk_set_writes((run, effect, name): Effect) {
     let sdk = (required_features() - wgpu::Features::SUBGROUP) | optional_features();
     let core = core_required_features() | optional_features();
@@ -661,23 +703,34 @@ fn fsr3_core_resource_set_writes_what_the_sdk_resource_set_writes() {
 }
 
 /// Defect: SPD's two dispatches reducing differently from its one: tiles
-/// that store other texels, or a second dispatch that changes what the first
-/// stored. One device, without subgroups, runs both. With the application's
-/// exposure nothing reads what SPD stores at the 1x1 mip, so every other
-/// write of every pass is compared; that store alone is the hand-off the
-/// one-dispatch form races on (`handed_off`).
+/// that store other texels, a second dispatch that changes what the first
+/// stored, never runs, or reduces mip 5 wrongly. One device, without
+/// subgroups, runs both. With the application's exposure nothing reads what
+/// SPD stores at the 1x1 mip, so every other write of every pass is compared
+/// in every case; that store is the hand-off the one-dispatch form races on
+/// where several workgroups write mip 5 (`handed_off`). With one workgroup
+/// nothing races, so there every write is compared, that store and what
+/// reads it (auto exposure) included.
 fn split_spd_writes_what_one_dispatch_writes((run, effect, name): Effect) {
     let features = (required_features() - wgpu::Features::SUBGROUP) | optional_features();
     let Some((device, queue)) = device_with(features, effect) else {
         return;
     };
-    for case in CASES.into_iter().filter(|case| !case.auto_exposure) {
+    for case in CASES {
+        let case = Case {
+            auto_exposure: false,
+            ..case
+        };
         let (expected, _) = run(&device, &queue, case, Spd::Selected);
         let (actual, _) = run(&device, &queue, case, Spd::Split);
         assert_same(name, case, &expected, &actual, |binding| {
             !handed_off(binding)
         });
     }
+    let (expected, _) = run(&device, &queue, ONE_WORKGROUP, Spd::Selected);
+    let (actual, _) = run(&device, &queue, ONE_WORKGROUP, Spd::Split);
+    assert!(expected.keys().any(|key| handed_off(&key.2)));
+    assert_same(name, ONE_WORKGROUP, &expected, &actual, |_| true);
 }
 
 #[test]
@@ -710,7 +763,11 @@ fn spd_without_wave_operations_writes_what_its_wave_operations_write((run, effec
             || binding.starts_with("rw_spd_mip")
             || binding == "rw_farthest_depth_mip1"
     };
-    for case in CASES.into_iter().filter(|case| !case.auto_exposure) {
+    for case in CASES {
+        let case = Case {
+            auto_exposure: false,
+            ..case
+        };
         let (expected, _) = run(&wave.0, &wave.1, case, Spd::Selected);
         let (actual, _) = run(&none.0, &none.1, case, Spd::Selected);
         assert_same(name, case, &expected, &actual, spd);
@@ -725,6 +782,36 @@ fn fsr2_spd_without_wave_operations_writes_what_its_wave_operations_write() {
 #[test]
 fn fsr3_spd_without_wave_operations_writes_what_its_wave_operations_write() {
     spd_without_wave_operations_writes_what_its_wave_operations_write(FSR3);
+}
+
+/// Defect: the core set failing where a pyramid's texture lacks a mip a pass
+/// binds (SDK-P27): below a 64-pixel maximum render size FSR2's exposure mips
+/// and FSR3's SPD mips have no mip 5. The SDK's set binds the last mip in its
+/// place; the core set, whose bindings are write-only views WebGPU does not
+/// let alias, binds an inert one. wgpu rejecting either, or a job failing,
+/// panics in the run; a second run differing from the first would show a
+/// store that reached a shared texel.
+#[test]
+fn core_resource_set_runs_below_a_64_pixel_maximum_render_size() {
+    for (run, effect, name) in [FSR2, FSR3] {
+        let Some((device, queue)) =
+            device_with(core_required_features() | optional_features(), effect)
+        else {
+            return;
+        };
+        for size in [[48, 40], [24, 20]] {
+            let case = Case {
+                display: size,
+                render: size,
+                fp16: true,
+                auto_exposure: true,
+                extras: false,
+            };
+            let (first, _) = run(&device, &queue, case, Spd::Selected);
+            let (second, _) = run(&device, &queue, case, Spd::Selected);
+            assert_same(name, case, &first, &second, |_| true);
+        }
+    }
 }
 
 #[test]

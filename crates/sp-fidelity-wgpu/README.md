@@ -168,10 +168,13 @@ SDK allocates and dispatches them:
 | `FLOAT32_FILTERABLE` | linear sampling of 32-bit float application inputs |
 
 `core_required_features()` is `FLOAT32_FILTERABLE` alone.
-`features_for(available)` returns the first of the two sets `available` holds,
-or `None`. One pass binds at most `storage_textures_per_stage(effect)` storage
-textures (5 for FSR2, 6 for the FSR3 upscaler); WebGPU's default limit is 4, so
-request the adapter's `max_storage_textures_per_shader_stage`.
+`features_for(available)` returns the first of three sets `available` holds:
+`required_features()`, those without `SUBGROUP` (the SDK's formats, SPD
+without wave operations), or `core_required_features()`; `None` if it holds
+none. One pass binds at most `storage_textures_per_stage(effect)` storage
+textures (`Some(5)` for FSR2, `Some(6)` for the FSR3 upscaler); WebGPU's
+default limit is 4, so request the adapter's
+`max_storage_textures_per_shader_stage`.
 
 Clears use storage writes, so `CLEAR_TEXTURE` is not needed. `R32Uint` clears
 preserve the float colour's bit pattern, including the `1.0` depth sentinel;
@@ -204,16 +207,19 @@ resource.
 | `R16_SNORM` lookups | `R32Float` holding each snorm value; no pass of the core set reads one |
 | mips SPD reads and writes | `Rgba16Float`, write-only in SPD's first dispatch and read-only in its second |
 
-Subgroups are separate: with `SUBGROUP` SPD uses its wave operations, and
-without it the SDK's `FFX_SPD_NO_WAVE_OPERATIONS` path. A device without
-subgroups reports no wave lanes, so the SDK selects the permutations of
-hardware without 64-wide waves.
+On the SDK's set SPD uses its wave operations with `SUBGROUP` and the SDK's
+`FFX_SPD_NO_WAVE_OPERATIONS` path without it; the core set never uses
+subgroups. Where no wave operations are used the backend reports no wave
+lanes, so the SDK selects the permutations of hardware without 64-wide
+waves, which sample no Lanczos lookup.
 
 A caller's own textures follow the set. Create FSR3's shared textures with
 `ffx_create_texture_wgpu(FfxEffect::Fsr3Upscaler, &description)` and register
 each with `ffx_get_described_resource_wgpu`, which keeps the SDK's
-description. A texture a generate-reactive pass writes is `R8Unorm` on the
-SDK's set and `Rgba8Unorm` on the core set. `ffx_sdk_texels_wgpu` and
+description. The reconstructed previous depth must have the size the SDK
+describes (the maximum render size): on the core set the pass addresses its
+words in rows of that width. A texture a generate-reactive pass writes is
+`R8Unorm` on the SDK's set and `Rgba8Unorm` on the core set. `ffx_sdk_texels_wgpu` and
 `ffx_texels_from_sdk_wgpu` convert texels between an allocation and the SDK's
 layout, for captures and uploads.
 
@@ -231,9 +237,13 @@ browser compiles the port's WGSL itself, so the core set's source also holds
 to what WGSL's specification requires and naga does not: no infinite constant
 expression, no two written pointers into one variable, and no
 `workgroupBarrier` after a branch on a value the workgroup does not share
-(SPD's one-dispatch exit, which its two dispatches do not take). A job's
-validation error cannot be read back there (SDK-P28): leave it to the page's
-error scopes and uncaptured-error handler.
+(SPD's one-dispatch exit, which its two dispatches do not take). Where a
+pyramid's texture lacks a mip a pass binds (a maximum render size below 64
+pixels), the core set binds an inert view and discards its stores: WebGPU
+rejects two writable views of one mip. A job's validation error cannot be
+read back there (SDK-P28), so the backend pushes no error scope on WebGPU:
+the error reaches the caller's own scopes or uncaptured-error handler, with
+wgpu's message. Only Chromium 149 on Apple Metal has run it.
 `readback::Readback::read_all` blocks for GPU completion and is
 native-only; it panics on WebGPU. GPU tests and the oracle remain native-only.
 
@@ -274,8 +284,9 @@ Only here, never in the port:
   but recording it invalidates the caller's whole encoder at `finish`. A
   clear or compute job creates its new ones inside validation and
   out-of-memory error scopes and fails before recording them if wgpu rejects
-  one; execution stops at the first failed job. On WebGPU the scopes resolve
-  only after the call, so there the error stays deferred to `finish`.
+  one; execution stops at the first failed job. WebGPU resolves a scope
+  only after the call, so there none is pushed: the caller's own scopes
+  receive the error, and recording the rejected object fails at `finish`.
 - Observers see each resource's SDK description beside the object, so a
   capture can write the SDK's layout.
 

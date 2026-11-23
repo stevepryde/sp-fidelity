@@ -104,24 +104,30 @@ pub fn core_required_features() -> wgpu::Features {
 
 /// The features to request for FSR2 and FSR3 upscaling from an adapter with
 /// `available`: [`required_features`] where it has them all, so the SDK's
-/// resource set runs; otherwise [`core_required_features`]; `None` where it
-/// lacks those too. Add [`optional_features`] the adapter has.
+/// resource set runs as the SDK dispatches it; those without `SUBGROUP` where
+/// it lacks only subgroups (the SDK's formats, SPD without wave operations);
+/// otherwise [`core_required_features`]; `None` where it lacks those too. Add
+/// [`optional_features`] the adapter has.
 pub fn features_for(available: wgpu::Features) -> Option<wgpu::Features> {
-    [required_features(), core_required_features()]
-        .into_iter()
-        .find(|features| available.contains(*features))
+    [
+        required_features(),
+        required_features() - wgpu::Features::SUBGROUP,
+        core_required_features(),
+    ]
+    .into_iter()
+    .find(|features| available.contains(*features))
 }
 
-/// The most storage textures one pass of `effect` binds, on either resource
-/// set: 5 for FSR2 (accumulate) and 6 for the FSR3 upscaler (the
-/// shading-change pyramid's mips). A device needs at least this
-/// `max_storage_textures_per_shader_stage`, where WebGPU's default is 4.
-/// Zero for an effect this does not cover.
-pub fn storage_textures_per_stage(effect: FfxEffect) -> u32 {
+/// The most storage textures one pass of FSR2 (`FfxEffect::Fsr2`: 5, in
+/// accumulate) or of the FSR3 upscaler (`FfxEffect::Fsr3Upscaler`: 6, the
+/// shading-change pyramid's mips) binds, on either resource set. A device
+/// needs at least this `max_storage_textures_per_shader_stage`, where
+/// WebGPU's default is 4. `None` for an effect this does not state it for.
+pub fn storage_textures_per_stage(effect: FfxEffect) -> Option<u32> {
     match effect {
-        FfxEffect::Fsr2 => 5,
-        FfxEffect::Fsr3Upscaler => 6,
-        _ => 0,
+        FfxEffect::Fsr2 => Some(5),
+        FfxEffect::Fsr3Upscaler => Some(6),
+        _ => None,
     }
 }
 
@@ -140,11 +146,14 @@ struct Capabilities {
     /// The SDK's storage formats, read-write accesses and texture atomics;
     /// otherwise the core resource set (`storage`).
     sdk_storage: bool,
-    /// Subgroups, for SPD's wave operations; otherwise the SDK's
-    /// `FFX_SPD_NO_WAVE_OPERATIONS`.
+    /// Subgroups on the SDK's resource set, for SPD's wave operations;
+    /// otherwise the SDK's `FFX_SPD_NO_WAVE_OPERATIONS`, and no wave lanes
+    /// reported (`get_device_capabilities`).
     wave_operations: bool,
     /// An upscaler's SPD pass runs as two dispatches (`upscaler_spd`): on
-    /// the core resource set, whose mips cannot be bound read-write.
+    /// the core resource set, whose mips cannot be bound read-write. Only
+    /// `storage_tests` sets it on the SDK's set, as the reference for what
+    /// the second dispatch stores.
     split_spd: bool,
 }
 
@@ -153,7 +162,9 @@ impl Capabilities {
         let sdk_storage = features.contains(sdk_storage_features());
         Self {
             sdk_storage,
-            wave_operations: features.contains(wgpu::Features::SUBGROUP),
+            // The core set is a browser's, whose compiler takes no subgroup
+            // built-in without its extension: it never uses them.
+            wave_operations: sdk_storage && features.contains(wgpu::Features::SUBGROUP),
             split_spd: !sdk_storage,
         }
     }
@@ -301,6 +312,9 @@ struct Resource {
     /// Row pitch of an upload buffer that initializes a texture.
     upload_row_pitch: Option<u32>,
     bytes: u64,
+    /// Texels a texel of the description takes, side by side, a component
+    /// each (`storage::Allocation`); one unless the core set allocated it so.
+    columns: u32,
 }
 
 struct Pipeline {
@@ -457,15 +471,22 @@ impl From<FfxErrorCode> for JobFailure {
 /// the caller's whole encoder, so a job checks its new objects before
 /// recording them. The fields drop in order, popping the inner scope first,
 /// as wgpu requires.
+///
+/// Native wgpu resolves a pop at once. WebGPU resolves it after the call, so
+/// a scope there could only take the error from the caller's own scopes and
+/// uncaptured-error handler and drop it unread: none is pushed, and the
+/// caller sees the error wgpu raised, with its message.
 struct CreationScopes {
-    out_of_memory: wgpu::ErrorScopeGuard,
-    validation: wgpu::ErrorScopeGuard,
+    out_of_memory: Option<wgpu::ErrorScopeGuard>,
+    validation: Option<wgpu::ErrorScopeGuard>,
 }
 
 impl CreationScopes {
     fn push(device: &wgpu::Device) -> Self {
-        let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
-        let out_of_memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+        let push =
+            |filter| cfg!(not(target_arch = "wasm32")).then(|| device.push_error_scope(filter));
+        let validation = push(wgpu::ErrorFilter::Validation);
+        let out_of_memory = push(wgpu::ErrorFilter::OutOfMemory);
         Self {
             out_of_memory,
             validation,
@@ -473,16 +494,14 @@ impl CreationScopes {
     }
 
     /// Fails with `FFX_ERROR_BACKEND_API_ERROR` and wgpu's message if wgpu
-    /// rejected an object created inside the scopes. Native wgpu resolves a
-    /// pop at once; WebGPU resolves it later, so there this sees nothing and
-    /// the error stays deferred to `finish`.
+    /// rejected an object created inside the scopes.
     fn check(self) -> Result<(), JobFailure> {
         let Self {
             out_of_memory,
             validation,
         } = self;
-        let out_of_memory = resolved(out_of_memory.pop());
-        let validation = resolved(validation.pop());
+        let out_of_memory = out_of_memory.and_then(|scope| resolved(scope.pop()));
+        let validation = validation.and_then(|scope| resolved(scope.pop()));
         match validation.or(out_of_memory) {
             Some(error) => Err(JobFailure {
                 code: FFX_ERROR_BACKEND_API_ERROR,
@@ -894,9 +913,7 @@ impl FfxWgpuBackend {
         {
             return Err(FFX_ERROR_INVALID_ARGUMENT.into());
         }
-        // A texture wider than its description holds a component a texel.
-        let described = self.resource(clear.target)?.handle.description.width.max(1);
-        let columns = (texture.width() / described).clamp(1, 4);
+        let columns = self.resource(clear.target)?.columns;
         let pipeline = self.clear_pipeline(texture.format(), columns)?;
         let scopes = CreationScopes::push(&self.device);
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
@@ -1037,7 +1054,12 @@ impl FfxWgpuBackend {
                     let fi_spd = pipeline.effect == FfxEffect::FrameInterpolation
                         && (pipeline.pass == Pass::InpaintingPyramid as u32
                             || pipeline.pass == Pass::GameVectorFieldInpaintingPyramid as u32);
-                    Some(if fi_spd {
+                    // The core resource set binds its mips write-only, and
+                    // WebGPU rejects two writable views of one mip in a
+                    // group, which the last mip standing in for an absent
+                    // one would be: an absent mip gets its own inert view
+                    // there too, and stores to it are discarded (SDK-P38).
+                    Some(if fi_spd || !self.capabilities.sdk_storage {
                         uav.mip
                     } else {
                         object.uav_mip(uav.mip)
@@ -1497,12 +1519,13 @@ impl FfxWgpuBackend {
         Ok(())
     }
 
-    /// The wgpu object of a resource `effect` creates, and its size in bytes.
+    /// The wgpu object of a resource `effect` creates, its size in bytes and
+    /// the texels each of its description's takes (`Resource::columns`).
     fn allocate(
         &self,
         effect: Option<FfxEffect>,
         d: &FfxCreateResourceDescription,
-    ) -> Result<(Object, u64), FfxErrorCode> {
+    ) -> Result<(Object, u64, u32), FfxErrorCode> {
         let description = d.resource_description;
         let widen_spd = effect == Some(FfxEffect::Fsr3Upscaler)
             && d.id == sp_fidelity::fsr3upscaler::resources::FFX_FSR3UPSCALER_RESOURCE_IDENTIFIER_SPD_MIPS;
@@ -1537,8 +1560,11 @@ impl FfxWgpuBackend {
             } else {
                 widen_spd.then_some(wgpu::TextureFormat::Rgba16Float)
             },
-            self.capabilities.sdk_storage,
+            self.device
+                .features()
+                .contains(wgpu::Features::TEXTURE_ATOMIC),
         )
+        .map(|(object, bytes)| (object, bytes, core.map_or(1, |core| core.columns)))
     }
 
     /// The port's WGSL for `blob`, as this device's capabilities select it.
@@ -2197,7 +2223,7 @@ impl FfxInterface for FfxWgpuBackend {
             .get(effect_context_id as usize)
             .and_then(Option::as_ref)
             .map(|context| context.effect);
-        let (object, bytes) = self.allocate(effect, d)?;
+        let (object, bytes, columns) = self.allocate(effect, d)?;
         let handle = Handle {
             object,
             description,
@@ -2212,6 +2238,7 @@ impl FfxInterface for FfxWgpuBackend {
             handle_id,
             upload_row_pitch: None,
             bytes,
+            columns,
         });
 
         // Initial data: an upload resource at the next index (which
@@ -2268,6 +2295,7 @@ impl FfxInterface for FfxWgpuBackend {
             handle_id: upload_handle_id,
             upload_row_pitch: row_pitch,
             bytes: contents.len() as u64,
+            columns: 1,
         });
         self.initializations.push((
             effect_context_id,
@@ -2313,6 +2341,7 @@ impl FfxInterface for FfxWgpuBackend {
             handle_id: in_resource.resource,
             upload_row_pitch: None,
             bytes: 0,
+            columns: 1,
         };
         let context = self
             .contexts
